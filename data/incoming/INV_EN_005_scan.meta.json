@@ -1,0 +1,7 @@
+{
+  "sender": "billing@swiftmovecouriers.com",
+  "subject": "Invoice INV-1005 - Fuel and Express Box Charges",
+  "received_timestamp": "2025-05-25T17:15:00Z",
+  "language": "en",
+  "attachments": ["INV_EN_005_scan.png"]
+}

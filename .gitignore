@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+
+# Env / secrets
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# LangGraph SQLite checkpoint
+state_memory.db
+state_memory.db-shm
+state_memory.db-wal
+
+# Generated reports + vector store (regenerate at runtime)
+outputs/added.json
+docDB/index.faiss
+docDB/index.pkl
+
+# Streamlit
+.streamlit/secrets.toml
