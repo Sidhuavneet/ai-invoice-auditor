@@ -2,7 +2,7 @@
 
 An end-to-end **multi-agent AI system** that ingests invoices (PDF, DOCX, scanned images), extracts structured data, validates it against configurable business rules, flags discrepancies for human review, and answers natural-language questions about processed invoices via a RAG chatbot.
 
-Built with **LangGraph**, **LangChain**, **Groq (Llama 3.3 70B)**, **FAISS**, and **Streamlit**.
+Built with **LangGraph**, **LangChain**, **Groq (Llama 3.3 70B)**, **FAISS**, **FastAPI**, and **Next.js**.
 
 ---
 
@@ -16,23 +16,30 @@ Built with **LangGraph**, **LangChain**, **Groq (Llama 3.3 70B)**, **FAISS**, an
 - **Mock ERP integration** — simulates enterprise lookups for PO/vendor reconciliation
 - **RAG chatbot** — FAISS + sentence-transformers embeddings let users query processed invoices in natural language
 - **Stateful & resumable** — SQLite checkpointing via LangGraph survives restarts and supports human-review interrupts
-- **Streamlit dashboard** — invoice viewer, discrepancy summary, approve/reject controls, QA chat
+- **FastAPI backend + Next.js frontend** — typed REST API consumed by an App Router dashboard
 
 ---
 
 ## Architecture
 
 ```
-Inbox  ──►  Extractor  ──►  Translator  ──►  Validator  ──►  Reporter  ──►  Router
-                                                                              │
-                                              ┌───────────────────────────────┤
-                                              ▼                               ▼
-                                     Human Review (interrupt)            Auto Approve / Reject
-                                              │                               │
-                                              └──────────────►  Saver  ◄──────┘
-                                                                  │
-                                                                  ▼
-                                                     JSON report + FAISS index
+                ┌─────────────────────────┐         ┌──────────────────────────┐
+                │  Next.js (App Router)   │  HTTP   │  FastAPI (api/server.py) │
+                │  /, /invoices/[name],   │ ──────► │  /process /invoices …    │
+                │  /chat                  │         │  /chat /upload           │
+                └─────────────────────────┘         └────────────┬─────────────┘
+                                                                 │
+                                                                 ▼
+Inbox  ──►  Extractor ──►  Translator ──►  Validator ──►  Reporter ──►  Router
+                                                                          │
+                                          ┌───────────────────────────────┤
+                                          ▼                               ▼
+                                 Human Review (interrupt)            Auto Approve / Reject
+                                          │                               │
+                                          └──────────────►  Saver  ◄──────┘
+                                                              │
+                                                              ▼
+                                                 JSON report + FAISS index
 ```
 
 **Agents**
@@ -55,7 +62,8 @@ Inbox  ──►  Extractor  ──►  Translator  ──►  Validator  ──
 - **Embeddings / RAG:** sentence-transformers (`all-MiniLM-L6-v2`), FAISS
 - **OCR & Parsing:** Tesseract, pypdf, python-docx, Pillow
 - **State:** SQLite (LangGraph checkpointer)
-- **UI:** Streamlit
+- **Backend API:** FastAPI + Uvicorn
+- **Frontend:** Next.js 14 (App Router), TypeScript, Tailwind CSS
 - **Config:** YAML rules file
 
 ---
@@ -64,11 +72,12 @@ Inbox  ──►  Extractor  ──►  Translator  ──►  Validator  ──
 
 ### Prerequisites
 - Python 3.11+
+- Node.js 18+
 - System packages: `tesseract-ocr`, `poppler-utils`
   - macOS: `brew install tesseract poppler`
   - Ubuntu: `sudo apt install tesseract-ocr poppler-utils`
 
-### Install & run
+### Backend (FastAPI)
 
 ```bash
 git clone https://github.com/<your-username>/ai-invoice-auditor.git
@@ -76,16 +85,39 @@ cd ai-invoice-auditor
 
 python -m venv .venv
 source .venv/bin/activate
-
 pip install -r requirements.txt
 
 cp .env.example .env
 # add your GROQ_API_KEY (free from https://console.groq.com/keys)
 
-streamlit run main.py
+uvicorn api.server:app --reload --port 8000
 ```
 
-Open http://localhost:8501, click **"Process New Invoices"** to run the pipeline on the sample invoices in `inbox/`, then review reports or ask the QA chatbot.
+API available at http://localhost:8000 (interactive docs at http://localhost:8000/docs).
+
+### Frontend (Next.js)
+
+```bash
+cd web
+cp .env.local.example .env.local
+npm install
+npm run dev
+```
+
+Open http://localhost:3000. Upload an invoice (or drop one into `inbox/`), click **Process New Invoices**, then review reports or open the QA chat.
+
+---
+
+## API
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/process` | Drain `inbox/` through the LangGraph pipeline |
+| POST | `/upload` | Multipart upload an invoice into `inbox/` |
+| GET  | `/invoices` | List processed invoice reports (summaries) |
+| GET  | `/invoices/{name}` | Full JSON report |
+| POST | `/invoices/{name}/decision` | Resume a paused HITL run with `{ status, remarks }` |
+| POST | `/chat` | Ask a question — runs the RAG sub-graph against FAISS |
 
 ---
 
@@ -93,16 +125,17 @@ Open http://localhost:8501, click **"Process New Invoices"** to run the pipeline
 
 ```
 .
-├── main.py                # Streamlit dashboard
-├── graph.py               # LangGraph workflow definition
-├── agents/                # Extractor, translator, validator, reporter, saver, RAG
-├── graph_utils/           # OCR, parsing, embeddings, mailbox, LLM gateway
-├── config/rules.yaml      # Business rules (tolerances, currencies, policies)
-├── inbox/                 # Drop invoices here for processing
-├── outputs/reports/       # Generated JSON reports
-├── docDB/                 # FAISS vector index
-├── mock_erp/              # Mock ERP system
-└── data/ERP_mockdata/     # Sample ERP records
+├── api/                    # FastAPI app (server.py)
+├── web/                    # Next.js frontend (App Router)
+├── graph.py                # LangGraph workflow definition
+├── agents/                 # Extractor, translator, validator, reporter, saver, RAG
+├── graph_utils/            # OCR, parsing, embeddings, mailbox, LLM gateway
+├── config/rules.yaml       # Business rules (tolerances, currencies, policies)
+├── inbox/                  # Drop invoices here for processing
+├── outputs/reports/        # Generated JSON reports
+├── docDB/                  # FAISS vector index
+├── mock_erp/               # Mock ERP system
+└── data/ERP_mockdata/      # Sample ERP records
 ```
 
 ---
@@ -117,6 +150,13 @@ Open http://localhost:8501, click **"Process New Invoices"** to run the pipeline
 - Accepted currencies and symbol → ISO mapping
 - Policies (e.g. missing field → flag, invalid currency → reject)
 - Auto-approval confidence threshold
+
+---
+
+## Deployment
+
+- **Backend:** any container host with system access for `tesseract` + `poppler` (Render, Railway, Fly.io). Expose port 8000.
+- **Frontend:** Vercel — set `NEXT_PUBLIC_API_URL` to the deployed API URL.
 
 ---
 

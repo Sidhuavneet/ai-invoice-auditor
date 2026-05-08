@@ -29,5 +29,8 @@ outputs/added.json
 docDB/index.faiss
 docDB/index.pkl
 
-# Streamlit
-.streamlit/secrets.toml
+# Next.js / web
+web/node_modules
+web/.next
+web/out
+web/next-env.d.ts
