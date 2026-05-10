@@ -75,11 +75,3 @@ export async function chat(query: string): Promise<{
   return handle(res);
 }
 
-export function statusColor(s: InvoiceSummary): string {
-  const rec = s.recommendation;
-  const st = s.status;
-  if (rec === "manual review" && st === "manual review") return "bg-amber-100 border-amber-300 text-amber-900";
-  if (st === "accept" || rec === "accept" || rec === "approve") return "bg-emerald-100 border-emerald-300 text-emerald-900";
-  if (st === "reject" || rec === "reject") return "bg-rose-100 border-rose-300 text-rose-900";
-  return "bg-zinc-100 border-zinc-300 text-zinc-800";
-}

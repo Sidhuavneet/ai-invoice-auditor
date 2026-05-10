@@ -4,9 +4,59 @@
 
 :root {
   color-scheme: light;
+  --bg: #fafaf9;
 }
 
 html, body {
-  background: #f7f7f8;
-  color: #111827;
+  background:
+    radial-gradient(1200px 600px at 100% -10%, rgba(124, 58, 237, 0.08), transparent 60%),
+    radial-gradient(900px 500px at -10% 10%, rgba(79, 70, 229, 0.07), transparent 60%),
+    var(--bg);
+  background-attachment: fixed;
+  color: #0c0a09;
+  -webkit-font-smoothing: antialiased;
 }
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-stone-200 bg-white shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_-12px_rgba(0,0,0,0.08)];
+  }
+  .card-hover {
+    @apply transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_2px_4px_rgba(0,0,0,0.04),0_12px_32px_-12px_rgba(0,0,0,0.12)];
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-medium transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply btn bg-gradient-to-b from-indigo-500 to-indigo-600 text-white shadow-sm hover:from-indigo-600 hover:to-indigo-700 active:scale-[0.98];
+  }
+  .btn-ghost {
+    @apply btn border border-stone-200 bg-white text-stone-700 hover:bg-stone-50 active:scale-[0.98];
+  }
+  .btn-success {
+    @apply btn bg-gradient-to-b from-emerald-500 to-emerald-600 text-white shadow-sm hover:from-emerald-600 hover:to-emerald-700 active:scale-[0.98];
+  }
+  .btn-danger {
+    @apply btn bg-gradient-to-b from-rose-500 to-rose-600 text-white shadow-sm hover:from-rose-600 hover:to-rose-700 active:scale-[0.98];
+  }
+  .pill {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset;
+  }
+  .input {
+    @apply w-full rounded-lg border border-stone-200 bg-white px-3 py-2 text-sm placeholder:text-stone-400 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100;
+  }
+  .skeleton {
+    @apply animate-pulse rounded-md bg-stone-200/70;
+  }
+}
+
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-in { animation: fade-in-up 0.3s ease-out both; }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #d6d3d1; border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: #a8a29e; background-clip: padding-box; }

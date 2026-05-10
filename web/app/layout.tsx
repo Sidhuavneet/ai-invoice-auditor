@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import "./globals.css";
+import { SideNav } from "./_components/SideNav";
 
 export const metadata: Metadata = {
   title: "AI Invoice Auditor",
-  description: "Multi-agent invoice auditing dashboard",
+  description: "Multi-agent invoice auditing dashboard powered by LangGraph + Groq",
 };
 
 export default function RootLayout({
@@ -15,18 +15,10 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="min-h-screen">
-        <header className="border-b border-zinc-200 bg-white">
-          <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-            <Link href="/" className="text-lg font-semibold tracking-tight">
-              AI Invoice Auditor
-            </Link>
-            <nav className="flex gap-4 text-sm">
-              <Link className="hover:underline" href="/">Dashboard</Link>
-              <Link className="hover:underline" href="/chat">QA Chat</Link>
-            </nav>
-          </div>
-        </header>
-        <main className="mx-auto max-w-6xl px-6 py-8">{children}</main>
+        <div className="mx-auto flex min-h-screen max-w-[1400px] gap-6 px-4 py-6 lg:px-8">
+          <SideNav />
+          <main className="min-w-0 flex-1 pb-12">{children}</main>
+        </div>
       </body>
     </html>
   );
