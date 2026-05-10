@@ -8,8 +8,24 @@ import json
 def extractor(state):
     print(f"[INFO]- extracting from {state['file_path']}")
     text=read_invoice(state["file_path"])
-    with open(state["metadata_path"],"r",encoding="utf-8") as file:
-        state["metadata"]=json.load(file)
+    meta_path=state.get("metadata_path") or ""
+    if meta_path:
+        try:
+            with open(meta_path,"r",encoding="utf-8") as file:
+                state["metadata"]=json.load(file)
+        except (FileNotFoundError, json.JSONDecodeError):
+            state["metadata"]={}
+    else:
+        # Uploaded files have no email sidecar — synthesise minimal metadata so
+        # downstream agents have a consistent shape to read from.
+        state["metadata"]={
+            "file_name": state.get("file_name",""),
+            "sender": "manual upload",
+            "subject": "",
+            "received_timestamp": "",
+            "language": "",
+            "attachments": [],
+        }
     state["invoice_json"]=structure_content(text)
     return state
 

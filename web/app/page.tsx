@@ -6,6 +6,8 @@ import {
   InvoiceSummary,
   listInvoices,
   processInbox,
+  rebuildIndex,
+  uploadFromUrl,
   uploadInvoice,
 } from "@/lib/api";
 import {
@@ -23,6 +25,7 @@ export default function DashboardPage() {
   const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState(false);
+  const [rebuilding, setRebuilding] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -47,6 +50,18 @@ export default function DashboardPage() {
     refresh();
   }, []);
 
+  // Prevent the browser's default "open dropped image as new page" behaviour
+  // anywhere on the document, so the dashboard's drop zone always wins.
+  useEffect(() => {
+    const stop = (e: DragEvent) => e.preventDefault();
+    window.addEventListener("dragover", stop);
+    window.addEventListener("drop", stop);
+    return () => {
+      window.removeEventListener("dragover", stop);
+      window.removeEventListener("drop", stop);
+    };
+  }, []);
+
   async function onProcess() {
     setProcessing(true);
     setMessage(null);
@@ -67,16 +82,67 @@ export default function DashboardPage() {
     }
   }
 
+  async function onRebuild() {
+    setRebuilding(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const res = await rebuildIndex();
+      setMessage(`Rebuilt index from ${res.indexed} report${res.indexed === 1 ? "" : "s"}. Chat is ready.`);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setRebuilding(false);
+    }
+  }
+
+  async function handleUrl(url: string) {
+    setUploading(true);
+    setError(null);
+    try {
+      const up = await uploadFromUrl(url);
+      setMessage(`Fetched ${up.filename} from URL. Running pipeline…`);
+      setProcessing(true);
+      const res = await processInbox();
+      setMessage(
+        res.processed
+          ? `Processed ${res.processed} invoice${res.processed === 1 ? "" : "s"}. Chat is up to date.`
+          : `Fetched ${up.filename}.`,
+      );
+      if (res.errors?.length) setError(res.errors.join("\n"));
+      await refresh();
+    } catch (err: any) {
+      const detail = (err.message || "").includes("403") || (err.message || "").includes("hotlink")
+        ? `${err.message}\n\nQuick fix: open ${url.length > 60 ? url.slice(0, 60) + "…" : url} in a new tab → right-click → "Save image as…" → drag the saved file onto this zone.`
+        : err.message;
+      setError(detail);
+      throw err;
+    } finally {
+      setUploading(false);
+      setProcessing(false);
+    }
+  }
+
   async function handleFile(file: File) {
     setUploading(true);
     setError(null);
     try {
       await uploadInvoice(file);
-      setMessage(`Uploaded ${file.name} — click Process to run the pipeline.`);
+      setMessage(`Uploaded ${file.name}. Running the pipeline…`);
+      setProcessing(true);
+      const res = await processInbox();
+      setMessage(
+        res.processed
+          ? `Processed ${res.processed} invoice${res.processed === 1 ? "" : "s"}. Chat is up to date.`
+          : `Uploaded ${file.name}. (No new files were picked up — already processed?)`,
+      );
+      if (res.errors?.length) setError(res.errors.join("\n"));
+      await refresh();
     } catch (err: any) {
       setError(err.message);
     } finally {
       setUploading(false);
+      setProcessing(false);
       if (fileRef.current) fileRef.current.value = "";
     }
   }
@@ -130,6 +196,15 @@ export default function DashboardPage() {
           <button onClick={refresh} className="btn-ghost" title="Refresh">
             <Icon name="refresh" />
           </button>
+          <button
+            onClick={onRebuild}
+            disabled={rebuilding}
+            className="btn-ghost"
+            title="Rebuild FAISS index from existing reports (fixes chat)"
+          >
+            {rebuilding ? <Spinner /> : <Icon name="sparkles" />}
+            {rebuilding ? "Rebuilding…" : "Rebuild Chat Index"}
+          </button>
           <label className="btn-ghost cursor-pointer">
             {uploading ? <Spinner /> : <Icon name="upload" />}
             {uploading ? "Uploading…" : "Upload"}
@@ -167,8 +242,60 @@ export default function DashboardPage() {
         onDrop={async (e) => {
           e.preventDefault();
           setDragOver(false);
-          const file = e.dataTransfer.files?.[0];
-          if (file) await handleFile(file);
+
+          // 1) Direct File from OS file system (Finder / Explorer).
+          const direct = e.dataTransfer.files?.[0];
+          if (direct) {
+            await handleFile(direct);
+            return;
+          }
+
+          // 2) DataTransferItem.getAsFile — browsers often expose the cached
+          //    bytes of an image dragged from a tab here, even when
+          //    dataTransfer.files is empty.
+          const items = Array.from(e.dataTransfer.items || []);
+          for (const it of items) {
+            if (it.kind === "file") {
+              const f = it.getAsFile();
+              if (f && f.size > 0) {
+                await handleFile(f);
+                return;
+              }
+            }
+          }
+
+          // 3) URL fallback — backend fetches it server-side.
+          //    Build a list of candidate URLs and prefer ones that *look* like
+          //    direct image/PDF assets. A page URL like canva.com/templates/
+          //    will fail with 403/HTML and is useless to us.
+          const candidates: string[] = [];
+          const html = e.dataTransfer.getData("text/html");
+          const htmlMatch = html.match(/<img[^>]+src=["']([^"']+)["']/i);
+          if (htmlMatch && htmlMatch[1].startsWith("http")) candidates.push(htmlMatch[1]);
+          e.dataTransfer
+            .getData("text/uri-list")
+            .split("\n")
+            .filter((l) => l.startsWith("http"))
+            .forEach((u) => candidates.push(u));
+          const plain = e.dataTransfer.getData("text/plain");
+          if (plain.startsWith("http")) candidates.push(plain);
+
+          const isAsset = (u: string) => /\.(png|jpe?g|webp|gif|pdf)(\?|$)/i.test(u);
+          const url = candidates.find(isAsset) || candidates[0];
+
+          if (!url) {
+            setError("Drop didn't contain a file or image URL. Drag from Google Images results, or right-click → 'Save image as…' and drag the saved file.");
+            return;
+          }
+          if (!isAsset(url)) {
+            setError(`That looks like a webpage URL (${new URL(url).hostname}), not an image. Open the actual image in its own tab first, or use the Upload button.`);
+            return;
+          }
+          try {
+            await handleUrl(url);
+          } catch {
+            /* handleUrl already set an actionable toast */
+          }
         }}
         className={`card flex items-center justify-between gap-4 p-4 transition-all ${
           dragOver ? "ring-2 ring-indigo-300" : ""

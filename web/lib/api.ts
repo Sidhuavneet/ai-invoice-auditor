@@ -56,10 +56,24 @@ export async function submitDecision(
   return handle(res);
 }
 
+export async function rebuildIndex(): Promise<{ ok: boolean; indexed: number; files: string[] }> {
+  const res = await fetch(`${API_URL}/rebuild-index`, { method: "POST" });
+  return handle(res);
+}
+
 export async function uploadInvoice(file: File): Promise<{ ok: boolean; filename: string }> {
   const fd = new FormData();
   fd.append("file", file);
   const res = await fetch(`${API_URL}/upload`, { method: "POST", body: fd });
+  return handle(res);
+}
+
+export async function uploadFromUrl(url: string): Promise<{ ok: boolean; filename: string }> {
+  const res = await fetch(`${API_URL}/upload-url`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
   return handle(res);
 }
 
@@ -73,5 +87,50 @@ export async function chat(query: string): Promise<{
     body: JSON.stringify({ query }),
   });
   return handle(res);
+}
+
+export async function chatStream(
+  query: string,
+  onToken: (t: string) => void,
+  onDone: (reviewed: Record<string, unknown>) => void,
+): Promise<void> {
+  const res = await fetch(`${API_URL}/chat/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query }),
+  });
+  if (!res.ok || !res.body) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `Stream failed: ${res.status}`);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    // SSE events are separated by blank lines.
+    const events = buffer.split("\n\n");
+    buffer = events.pop() ?? "";
+    for (const evt of events) {
+      const lines = evt.split("\n");
+      let event = "message";
+      let data = "";
+      for (const line of lines) {
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        else if (line.startsWith("data:")) data += line.slice(5).trim();
+      }
+      if (!data) continue;
+      try {
+        const parsed = JSON.parse(data);
+        if (event === "token") onToken(parsed as string);
+        else if (event === "done") onDone((parsed as any).reviewed_response || {});
+        else if (event === "error") throw new Error(String(parsed));
+      } catch (e) {
+        if (event === "error") throw e;
+      }
+    }
+  }
 }
 

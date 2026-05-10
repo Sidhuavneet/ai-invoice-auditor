@@ -13,14 +13,15 @@ def read_invoice(file_path:str)->str:
     - str: content of the file
     """
     try:
-        if file_path.endswith(".pdf"):
+        lower = file_path.lower()
+        if lower.endswith(".pdf"):
             content = extract_pdf_content(file_path)
-        elif file_path.endswith(".png"):
+        elif lower.endswith((".png", ".jpg", ".jpeg")):
             content = extract_text_from_image(file_path)
-        elif file_path.endswith(".docx"):
+        elif lower.endswith(".docx"):
             content = extract_docx_content(file_path)
         else:
-            print(f"Unknown file type is found, given file : {file_path}")
+            raise ValueError(f"Unsupported file type: {file_path}")
         return content
     except Exception as e:
         return f"Error: {str(e)}"

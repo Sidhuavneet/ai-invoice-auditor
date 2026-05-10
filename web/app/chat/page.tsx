@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { chat } from "@/lib/api";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { chatStream } from "@/lib/api";
 import { Icon, Spinner, Toast } from "@/lib/ui";
 
 type Message = {
@@ -11,10 +13,10 @@ type Message = {
 };
 
 const SUGGESTIONS = [
-  "What's the total of the most recent invoice?",
-  "Which invoices were flagged for manual review?",
-  "List vendors with rejected invoices",
-  "Show me invoices with discrepancies above tolerance",
+  "List all invoices with their vendor, total, and status as a table",
+  "What is the total amount of invoice RE-2025-004?",
+  "Which invoices were flagged for manual review and why?",
+  "Show line items for HafenLogistik GmbH",
 ];
 
 export default function ChatPage() {
@@ -33,16 +35,46 @@ export default function ChatPage() {
     if (!text || loading) return;
     setError(null);
     setInput("");
-    setMessages((m) => [...m, { role: "user", content: text }]);
+    const history = messages.slice(-4);
+    const contextualised =
+      history.length > 0
+        ? `Conversation so far:\n${history
+            .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
+            .join("\n")}\n\nCurrent question: ${text}`
+        : text;
+    setMessages((m) => [
+      ...m,
+      { role: "user", content: text },
+      { role: "assistant", content: "" },
+    ]);
     setLoading(true);
     try {
-      const res = await chat(text);
-      setMessages((m) => [
-        ...m,
-        { role: "assistant", content: res.response, reviewed: res.reviewed_response },
-      ]);
+      await chatStream(
+        contextualised,
+        (token) => {
+          setMessages((m) => {
+            const copy = m.slice();
+            const last = copy[copy.length - 1];
+            if (last && last.role === "assistant") {
+              copy[copy.length - 1] = { ...last, content: last.content + token };
+            }
+            return copy;
+          });
+        },
+        (reviewed) => {
+          setMessages((m) => {
+            const copy = m.slice();
+            const last = copy[copy.length - 1];
+            if (last && last.role === "assistant") {
+              copy[copy.length - 1] = { ...last, reviewed };
+            }
+            return copy;
+          });
+        },
+      );
     } catch (e: any) {
       setError(e.message);
+      setMessages((m) => m.slice(0, -1));
     } finally {
       setLoading(false);
     }
@@ -159,7 +191,13 @@ function MessageBubble({ message }: { message: Message }) {
               : "rounded-tl-sm border border-stone-200 bg-white text-stone-900"
           }`}
         >
-          <div className="whitespace-pre-wrap leading-relaxed">{message.content}</div>
+          {isUser ? (
+            <div className="whitespace-pre-wrap leading-relaxed">{message.content}</div>
+          ) : (
+            <div className="markdown leading-relaxed">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+            </div>
+          )}
         </div>
         {message.reviewed && Object.keys(message.reviewed).length > 0 && (
           <details className="ml-1 text-xs text-stone-500">

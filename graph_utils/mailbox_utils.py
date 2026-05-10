@@ -50,20 +50,28 @@ def poll(target):
     print("----------------polling-----------------")
     added=load_or_create_json(added_files_path)
     out={"file":"","meta":""}
-    for f in os.listdir(target):
-        if f.endswith(('.pdf',".docx",".png")):
-            if f not in added:
-                print("open file",f)
-                f_name=f[:f.rfind(".")]
-                out["file"]=f
+    for fname in os.listdir(target):
+        if fname.endswith(('.pdf',".docx",".png",".jpg",".jpeg")):
+            if fname not in added:
+                print("open file",fname)
+                f_name=fname[:fname.rfind(".")]
+                out["file"]=fname
                 meta=f_name+".meta.json"
                 if meta in os.listdir(target):
                     print("open meta",meta)
                     out["meta"]=meta
-                added.append(f)
-                with open(added_files_path, "w") as f:
-                    json.dump(added, f, indent=4)
-                print(f"simualted ingestion of {f}")
+                added.append(fname)
+                with open(added_files_path, "w") as fh:
+                    json.dump(added, fh, indent=4)
+                print(f"simulated ingestion of {fname}")
                 return out
 
-        
+
+def unmark(filename):
+    """Remove a file from the processed list so it can be retried."""
+    added=load_or_create_json(added_files_path)
+    if filename in added:
+        added.remove(filename)
+        with open(added_files_path, "w") as fh:
+            json.dump(added, fh, indent=4)
+
