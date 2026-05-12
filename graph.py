@@ -39,8 +39,13 @@ def human_review(state):
 
 
 def router(state):
-    recommendation=state['system_report']['recommendation'].lower()
-    return recommendation
+    rec = ((state.get("system_report") or {}).get("recommendation") or "manual_review")
+    rec = str(rec).lower().strip().replace(" ", "_")
+    if rec in {"approve", "approved", "accept"}:
+        return "approve"
+    if rec in {"reject", "rejected"}:
+        return "reject"
+    return "manual_review"
 
 from typing import TypedDict
 class State(TypedDict):
@@ -69,7 +74,7 @@ graph.add_edge("extractor","translate")
 graph.add_edge("translate","validation")
 graph.add_edge("validation","reporting")
 graph.add_conditional_edges("reporting",router,{
-    "manual review":"human",
+    "manual_review":"human",
     "approve": "final",
     "reject": "final"
 })

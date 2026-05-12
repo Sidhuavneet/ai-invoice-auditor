@@ -37,8 +37,23 @@ export default function InvoiceDetailPage() {
     try {
       await submitDecision(name, status, remarks);
       router.refresh();
-      const refreshed = await getInvoice(name);
-      setData(refreshed);
+      // Poll until the saver has flipped status away from manual_review.
+      // The decision endpoint returns once the graph resumes, but the file
+      // write + index refresh complete asynchronously — without polling the
+      // detail page would still show "Manual Review" until a manual reload.
+      const expected = status === "accept" ? "approved" : "rejected";
+      const deadline = Date.now() + 15000;
+      while (Date.now() < deadline) {
+        const refreshed = await getInvoice(name);
+        const st = String(refreshed?.status || "").toLowerCase().trim().replace(/\s+/g, "_");
+        if (st === expected || st === "approved" || st === "rejected" || st === "error") {
+          setData(refreshed);
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      // Timed out — show whatever we have.
+      setData(await getInvoice(name));
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -61,15 +76,17 @@ export default function InvoiceDetailPage() {
   const header = data.header || {};
   const items: LineItem[] = data.line_item || [];
   const summary: string[] = data.discrepancy_report?.discrepancy_summary || [];
-  const status = (data.status || "").toLowerCase().trim();
-  const recommendation = (data.recommendation || "").toLowerCase().trim();
-  const needsReview = status === "manual review" || recommendation === "manual review";
+  const norm = (v: any) =>
+    (v || "").toString().toLowerCase().trim().replace(/\s+/g, "_");
+  const status = norm(data.status);
+  const recommendation = norm(data.recommendation);
+  const needsReview = status === "manual_review" || recommendation === "manual_review";
   const itemColumns = items.length > 0 ? Object.keys(items[0]) : [];
 
   const kind: any =
-    status === "accept" || recommendation === "accept" || recommendation === "approve"
+    status === "approved" || status === "accept" || recommendation === "approve" || recommendation === "approved"
       ? "approved"
-      : status === "reject" || recommendation === "reject"
+      : status === "rejected" || status === "reject" || recommendation === "reject" || recommendation === "rejected"
         ? "rejected"
         : needsReview
           ? "review"
@@ -205,7 +222,7 @@ export default function InvoiceDetailPage() {
         </section>
       )}
 
-      {needsReview && status !== "accept" && status !== "reject" && (
+      {needsReview && status !== "approved" && status !== "rejected" && (
         <section className="card border-amber-200 bg-gradient-to-br from-amber-50 to-amber-50/30 p-5">
           <div className="mb-3 flex items-center gap-2">
             <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-100 text-amber-700">

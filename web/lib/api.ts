@@ -35,6 +35,9 @@ export async function getInvoice(name: string): Promise<any> {
 export async function processInbox(): Promise<{
   processed: number;
   errors: string[];
+  indexed?: number;
+  truncated?: boolean;
+  max_iters?: number;
 }> {
   const res = await fetch(`${API_URL}/process`, { method: "POST" });
   return handle(res);
@@ -93,11 +96,13 @@ export async function chatStream(
   query: string,
   onToken: (t: string) => void,
   onDone: (reviewed: Record<string, unknown>) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   const res = await fetch(`${API_URL}/chat/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query }),
+    signal,
   });
   if (!res.ok || !res.body) {
     const text = await res.text().catch(() => "");
@@ -106,31 +111,48 @@ export async function chatStream(
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    // SSE events are separated by blank lines.
-    const events = buffer.split("\n\n");
-    buffer = events.pop() ?? "";
-    for (const evt of events) {
-      const lines = evt.split("\n");
-      let event = "message";
-      let data = "";
-      for (const line of lines) {
-        if (line.startsWith("event:")) event = line.slice(6).trim();
-        else if (line.startsWith("data:")) data += line.slice(5).trim();
-      }
-      if (!data) continue;
-      try {
-        const parsed = JSON.parse(data);
-        if (event === "token") onToken(parsed as string);
-        else if (event === "done") onDone((parsed as any).reviewed_response || {});
-        else if (event === "error") throw new Error(String(parsed));
-      } catch (e) {
-        if (event === "error") throw e;
+  const onAbort = () => {
+    try {
+      reader.cancel();
+    } catch {
+      /* ignore */
+    }
+  };
+  if (signal) {
+    if (signal.aborted) {
+      onAbort();
+      throw new DOMException("Aborted", "AbortError");
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+  }
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split("\n\n");
+      buffer = events.pop() ?? "";
+      for (const evt of events) {
+        const lines = evt.split("\n");
+        let event = "message";
+        let data = "";
+        for (const line of lines) {
+          if (line.startsWith("event:")) event = line.slice(6).trim();
+          else if (line.startsWith("data:")) data += line.slice(5).trim();
+        }
+        if (!data) continue;
+        try {
+          const parsed = JSON.parse(data);
+          if (event === "token") onToken(parsed as string);
+          else if (event === "done") onDone((parsed as any).reviewed_response || {});
+          else if (event === "error") throw new Error(String(parsed));
+        } catch (e) {
+          if (event === "error") throw e;
+        }
       }
     }
+  } finally {
+    if (signal) signal.removeEventListener("abort", onAbort);
   }
 }
 

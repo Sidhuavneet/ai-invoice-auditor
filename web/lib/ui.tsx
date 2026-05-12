@@ -148,13 +148,18 @@ export function Spinner({ className = "h-4 w-4" }: { className?: string }) {
 export type StatusKind = "approved" | "rejected" | "review" | "pending" | "neutral";
 
 export function classifyStatus(s: InvoiceSummary): StatusKind {
-  const rec = (s.recommendation || "").toLowerCase().trim();
-  const st = (s.status || "").toLowerCase().trim();
-  if (rec === "manual review" && st === "manual review") return "review";
-  if (st === "accept" || rec === "accept" || rec === "approve") return "approved";
-  if (st === "reject" || rec === "reject") return "rejected";
-  if (st === "manual review" || rec === "manual review") return "review";
-  if (!st && !rec) return "pending";
+  // Backend now emits canonical snake_case lowercase values, but we keep
+  // tolerance for legacy reports written before normalization.
+  const norm = (v: any) =>
+    (v || "").toString().toLowerCase().trim().replace(/\s+/g, "_");
+  const rec = norm(s.recommendation);
+  const st = norm(s.status);
+  if (st === "approved" || st === "accept" || rec === "approve" || rec === "approved" || rec === "accept")
+    return "approved";
+  if (st === "rejected" || st === "reject" || rec === "reject" || rec === "rejected")
+    return "rejected";
+  if (st === "manual_review" || rec === "manual_review") return "review";
+  if (st === "pending" || (!st && !rec)) return "pending";
   return "neutral";
 }
 

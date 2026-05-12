@@ -68,11 +68,13 @@ export default function DashboardPage() {
     setError(null);
     try {
       const res = await processInbox();
-      setMessage(
-        res.processed
-          ? `Processed ${res.processed} invoice${res.processed === 1 ? "" : "s"}.`
-          : "No new invoices in inbox.",
-      );
+      const base = res.processed
+        ? `Processed ${res.processed} invoice${res.processed === 1 ? "" : "s"}.`
+        : "No new invoices in inbox.";
+      const truncMsg = res.truncated
+        ? ` Stopped at ${res.max_iters ?? "the"} per-request cap — click Process again to continue.`
+        : "";
+      setMessage(base + truncMsg);
       if (res.errors?.length) setError(res.errors.join("\n"));
       await refresh();
     } catch (e: any) {
@@ -161,7 +163,9 @@ export default function DashboardPage() {
       else if (k === "rejected") counts.rejected++;
       else if (k === "review") counts.review++;
       else counts.pending++;
-      const n = parseFloat(String(inv.total));
+      // Strip currency symbols/thousands separators so "1,234.56" or "₹1,234" parse.
+      const raw = String(inv.total ?? "").replace(/[^0-9.\-]/g, "");
+      const n = parseFloat(raw);
       if (!Number.isNaN(n)) totalAmount += n;
     }
     return { ...counts, totalAmount };

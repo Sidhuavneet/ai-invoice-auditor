@@ -25,10 +25,19 @@ export default function ChatPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, loading]);
+
+  // Cancel any in-flight SSE stream when the user navigates away from /chat,
+  // otherwise the connection lingers and the next stream gets mixed output.
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
 
   async function send(q?: string) {
     const text = (q ?? input).trim();
@@ -48,6 +57,9 @@ export default function ChatPage() {
       { role: "assistant", content: "" },
     ]);
     setLoading(true);
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
       await chatStream(
         contextualised,
@@ -71,12 +83,15 @@ export default function ChatPage() {
             return copy;
           });
         },
+        controller.signal,
       );
     } catch (e: any) {
+      if (e?.name === "AbortError") return;
       setError(e.message);
       setMessages((m) => m.slice(0, -1));
     } finally {
       setLoading(false);
+      if (abortRef.current === controller) abortRef.current = null;
     }
   }
 

@@ -1,6 +1,8 @@
 import json
 import os
+import re
 import shutil
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -13,20 +15,24 @@ from pydantic import BaseModel
 load_dotenv()
 
 from agents.rag_agents.rag import rag_chat
+from agents.reporting_agent import _atomic_write_json
 from graph import app as graph_app
 from graph import resumer
 from graph_utils import mailbox_utils
 from graph_utils.embeddings import get_embedding_model
 from langchain_community.vectorstores.faiss import FAISS
+from langchain_core.documents import Document
 from langchain_groq import ChatGroq
 
 REPORTS_DIR = Path("outputs/reports")
 INBOX_DIR = Path("inbox")
+PROCESSED_DIR = INBOX_DIR / "processed"
 DOC_DB_DIR = Path("docDB")
 ERRORS_DIR = Path("outputs/errors")
 
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 INBOX_DIR.mkdir(parents=True, exist_ok=True)
+PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 DOC_DB_DIR.mkdir(parents=True, exist_ok=True)
 ERRORS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -70,12 +76,41 @@ class ChatBody(BaseModel):
     query: str
 
 
+# ---------- canonical status helpers --------------------------------------
+
+FINAL_STATUSES = {"approved", "rejected"}
+
+
+def _canon_status(raw) -> str:
+    s = (str(raw) if raw is not None else "").lower().strip().replace(" ", "_")
+    if s in {"accept", "approve", "approved"}:
+        return "approved"
+    if s in {"reject", "rejected"}:
+        return "rejected"
+    if s in {"manual_review", "review"}:
+        return "manual_review"
+    if s in {"not_required"}:
+        return "not_required"
+    return s  # e.g. "pending", "error", or empty
+
+
+def _canon_recommendation(raw) -> str:
+    s = (str(raw) if raw is not None else "").lower().strip().replace(" ", "_")
+    if s in {"approve", "approved", "accept"}:
+        return "approve"
+    if s in {"reject", "rejected"}:
+        return "reject"
+    if s in {"manual_review", "review"}:
+        return "manual_review"
+    return s
+
+
 def _summarize_report(filename: str) -> dict:
     try:
         with open(REPORTS_DIR / filename, "r") as f:
             data = json.load(f)
     except Exception:
-        return {"file": filename, "status": "error", "recommendation": "", "vendor": "", "invoice_no": "", "total": ""}
+        return {"file": filename, "status": "error", "recommendation": "", "vendor": "", "invoice_no": "", "total": "", "pipeline_status": "error"}
     header = data.get("header", {}) or {}
     return {
         "file": filename,
@@ -84,8 +119,9 @@ def _summarize_report(filename: str) -> dict:
         "vendor": header.get("vendor_id", ""),
         "currency": header.get("currency", ""),
         "total": header.get("total_amount", ""),
-        "recommendation": (data.get("recommendation") or "").lower().strip(),
-        "status": (data.get("status") or "").lower().strip(),
+        "recommendation": _canon_recommendation(data.get("recommendation")),
+        "status": _canon_status(data.get("status")),
+        "pipeline_status": data.get("pipeline_status", "ok"),
     }
 
 
@@ -96,21 +132,19 @@ def health():
 
 @app.get("/invoices")
 def list_invoices():
-    """List finished reports + any inbox files still in-flight (paused on
-    human-review or yet to run). Pending entries get status="pending" so the
-    UI can show them with a distinct badge."""
     items: list[dict] = []
     seen_stems: set[str] = set()
     if REPORTS_DIR.exists():
         for f in sorted(os.listdir(REPORTS_DIR)):
             if f.endswith(".json") and f.startswith("RE_"):
                 items.append(_summarize_report(f))
-                # RE_<stem>.json → track <stem> so we don't double-list
                 seen_stems.add(f[3:-5])
-    # Inbox files without a corresponding report = pending.
     if INBOX_DIR.exists():
         exts = (".pdf", ".docx", ".png", ".jpg", ".jpeg")
         for f in sorted(os.listdir(INBOX_DIR)):
+            full = INBOX_DIR / f
+            if not full.is_file():
+                continue
             if not f.lower().endswith(exts):
                 continue
             stem = f[: f.rfind(".")]
@@ -125,28 +159,32 @@ def list_invoices():
                 "total": "",
                 "recommendation": "",
                 "status": "pending",
+                "pipeline_status": "pending",
             })
     return items
 
 
 @app.get("/invoices/{name}")
 def get_invoice(name: str):
-    # 1) Direct report name (RE_*.json) — return it.
     path = REPORTS_DIR / name
     if path.exists() and name.endswith(".json"):
         with open(path, "r") as f:
-            return json.load(f)
-    # 2) Inbox filename (e.g. "Actual_invoice.pdf") — check if its report exists
-    #    yet. After HITL approval, the graph runs Saver which writes
-    #    RE_<stem>.json; the UI keeps the original inbox name in its URL.
+            data = json.load(f)
+            data["status"] = _canon_status(data.get("status"))
+            data["recommendation"] = _canon_recommendation(data.get("recommendation"))
+            return data
     if not name.endswith(".json"):
         stem = name[: name.rfind(".")] if "." in name else name
         report_path = REPORTS_DIR / f"RE_{stem}.json"
         if report_path.exists():
             with open(report_path, "r") as f:
-                return json.load(f)
-    # 3) Still pending (graph paused or not yet run) — or failed.
+                data = json.load(f)
+                data["status"] = _canon_status(data.get("status"))
+                data["recommendation"] = _canon_recommendation(data.get("recommendation"))
+                return data
     inbox_path = INBOX_DIR / name
+    if not inbox_path.exists():
+        inbox_path = PROCESSED_DIR / name
     if inbox_path.exists():
         stem = name[: name.rfind(".")] if "." in name else name
         err_path = ERRORS_DIR / f"{stem}.json"
@@ -161,7 +199,8 @@ def get_invoice(name: str):
                 "line_item": [],
                 "discrepancy_report": {"discrepancy_summary": []},
                 "status": "error",
-                "recommendation": "error",
+                "recommendation": "",
+                "pipeline_status": "error",
                 "human_report": f"Processing failed: {err.get('error','')}. Fix the document or pipeline and re-run /process.",
             }
         return {
@@ -169,8 +208,9 @@ def get_invoice(name: str):
             "header": {},
             "line_item": [],
             "discrepancy_report": {"discrepancy_summary": []},
-            "status": "manual review",
-            "recommendation": "manual review",
+            "status": "manual_review",
+            "recommendation": "manual_review",
+            "pipeline_status": "pending",
             "human_report": "Pipeline is paused awaiting your decision. Approve or reject below to resume processing.",
         }
     raise HTTPException(404, "Invoice not found")
@@ -178,17 +218,41 @@ def get_invoice(name: str):
 
 @app.post("/invoices/{name}/decision")
 def submit_decision(name: str, body: DecisionBody):
-    status = body.status.lower().strip()
-    if status not in {"accept", "reject"}:
-        raise HTTPException(400, "status must be 'accept' or 'reject'")
+    decided = _canon_status(body.status)
+    if decided not in FINAL_STATUSES:
+        raise HTTPException(400, "status must be 'approve'/'accept' or 'reject'")
     invoice_name = name[: name.rfind(".")] if name.endswith(".json") else name
     if invoice_name.startswith("RE_"):
         invoice_name = invoice_name[3:]
     try:
-        resumer(name=invoice_name, status=status, remarks=body.remarks)
+        # Resumer passes status straight back into state; saver normalizes.
+        resumer(name=invoice_name, status=decided, remarks=body.remarks)
     except Exception as e:
         raise HTTPException(500, f"Resume failed: {e}")
-    return {"ok": True}
+    # Move source file to processed/ once finalized.
+    _move_to_processed(invoice_name)
+    # Refresh index so chat reflects the new status immediately.
+    try:
+        _refresh_index_from_reports()
+    except Exception as e:
+        print(f"[decision] index refresh skipped: {e}")
+    return {"ok": True, "status": decided}
+
+
+def _move_to_processed(stem: str) -> None:
+    for ext in (".pdf", ".docx", ".png", ".jpg", ".jpeg"):
+        src = INBOX_DIR / f"{stem}{ext}"
+        if src.exists() and src.is_file():
+            try:
+                shutil.move(str(src), str(PROCESSED_DIR / src.name))
+            except Exception as e:
+                print(f"[processed-move] {src.name}: {e}")
+    meta = INBOX_DIR / f"{stem}.meta.json"
+    if meta.exists():
+        try:
+            shutil.move(str(meta), str(PROCESSED_DIR / meta.name))
+        except Exception:
+            pass
 
 
 @app.post("/process")
@@ -198,15 +262,15 @@ def process_inbox():
     errors: list[str] = []
     failed: list[str] = []
     seen: set[str] = set()
-    MAX_ITERS = 50  # safety net against any future poller weirdness
+    MAX_ITERS = int(os.environ.get("MAX_PROCESS_ITERS", "50"))
     iters = 0
+    truncated = False
     while iters < MAX_ITERS:
         iters += 1
         paths = mailbox_utils.poll(target)
         if not paths or not paths.get("file"):
             break
         fname = paths["file"]
-        # If poll() somehow returns the same file twice in one request, stop.
         if fname in seen:
             break
         seen.add(fname)
@@ -217,7 +281,7 @@ def process_inbox():
         try:
             if err_path.exists():
                 err_path.unlink()
-            graph_app.invoke(
+            result_state = graph_app.invoke(
                 {
                     "file_path": file_path,
                     "metadata_path": metadata_path,
@@ -226,8 +290,11 @@ def process_inbox():
                 config={"configurable": {"thread_id": file_name}},
             )
             processed += 1
+            # Auto-finalized (no human-review pause) → move to processed/.
+            final_status = _canon_status((result_state or {}).get("status"))
+            if final_status in FINAL_STATUSES:
+                _move_to_processed(file_name)
         except Exception as e:
-            # One bad file shouldn't block the rest. Record it for the UI and keep going.
             msg = f"{type(e).__name__}: {e}"
             errors.append(f"{fname}: {msg}")
             failed.append(fname)
@@ -236,60 +303,109 @@ def process_inbox():
             except Exception:
                 pass
             continue
+    else:
+        # Loop exited because we hit MAX_ITERS without `break` — check if more remain.
+        pass
+    # Detect truncation: there are still un-added inbox files after we stopped.
+    try:
+        nxt = mailbox_utils.poll(target)
+        if nxt and nxt.get("file"):
+            truncated = True
+            # We just consumed it via poll(); roll it back.
+            mailbox_utils.unmark(nxt["file"])
+    except Exception:
+        pass
 
-    # Only after the request completes, unmark failed files so the user can
-    # retry them on a future click — never inside the loop, that infinite-loops.
     for fname in failed:
         try:
             mailbox_utils.unmark(fname)
         except Exception:
             pass
 
-    # Always refresh the FAISS index so chat stays in sync, regardless of
-    # whether the pipeline reached Saver (e.g. when a graph paused on review).
     indexed = _refresh_index_from_reports()
-    return {"processed": processed, "errors": errors, "indexed": indexed}
+    return {
+        "processed": processed,
+        "errors": errors,
+        "indexed": indexed,
+        "truncated": truncated,
+        "max_iters": MAX_ITERS,
+    }
 
+
+# ---------- FAISS index (single writer, per-report vector IDs) ------------
 
 MANIFEST_PATH = DOC_DB_DIR / "manifest.json"
 
 
-def _load_manifest() -> dict[str, float]:
-    if MANIFEST_PATH.exists():
-        try:
-            return json.loads(MANIFEST_PATH.read_text())
-        except Exception:
-            return {}
-    return {}
+def _load_manifest() -> dict:
+    """Manifest schema: {report_name: {"mtime": float, "ids": [str, ...]}}.
+
+    Tolerates legacy schema where the value was a bare float; those entries
+    are treated as having unknown IDs (forced re-add on next refresh).
+    """
+    if not MANIFEST_PATH.exists():
+        return {}
+    try:
+        raw = json.loads(MANIFEST_PATH.read_text())
+    except Exception:
+        return {}
+    out: dict = {}
+    for k, v in raw.items():
+        if isinstance(v, dict):
+            out[k] = {"mtime": float(v.get("mtime") or 0), "ids": list(v.get("ids") or [])}
+        else:
+            # Legacy: float mtime, no IDs tracked.
+            out[k] = {"mtime": float(v or 0), "ids": []}
+    return out
 
 
-def _save_manifest(m: dict[str, float]) -> None:
-    MANIFEST_PATH.write_text(json.dumps(m, indent=2))
+def _save_manifest(m: dict) -> None:
+    _atomic_write_json(str(MANIFEST_PATH), m)
 
 
 def _refresh_index_from_reports(force: bool = False) -> int:
-    """Embed only reports that are new or changed since last run.
+    """Embed only reports that are new or changed. Single writer for FAISS.
 
-    Maintains docDB/manifest.json mapping report filename -> mtime. On each call:
-      - load existing FAISS index (if any)
-      - find reports not yet in manifest, or whose mtime advanced
-      - embed only those, append to index
-      - update manifest
-    Re-embedding the whole corpus on every call wastes CPU and Groq budget; this
-    keeps the index incremental and durable across restarts.
+    On change, deletes the old vector IDs for that report before re-adding,
+    so re-processing a file does not accumulate duplicates.
     """
-    from langchain_core.documents import Document
     from langchain_text_splitters import RecursiveJsonSplitter
 
     splitter = RecursiveJsonSplitter(max_chunk_size=1999)
     manifest = {} if force else _load_manifest()
 
-    new_docs: list[Document] = []
+    index_file = DOC_DB_DIR / "index.faiss"
+    db: Optional[FAISS] = None
+    if index_file.exists() and not force:
+        db = FAISS.load_local(
+            str(DOC_DB_DIR) + "/",
+            embeddings=embedding_model,
+            allow_dangerous_deserialization=True,
+        )
+
     new_manifest = dict(manifest)
+    added_total = 0
+    pending_first_batch: list[tuple[str, list[Document], list[str]]] = []
+
+    current_reports = {p.name for p in REPORTS_DIR.glob("RE_*.json")}
+
+    # 1) Drop manifest entries for reports that no longer exist on disk.
+    for stale in list(new_manifest.keys()):
+        if stale not in current_reports:
+            ids = new_manifest[stale].get("ids") or []
+            if db is not None and ids:
+                try:
+                    db.delete(ids=ids)
+                except Exception as e:
+                    print(f"[index] stale-delete failed for {stale}: {e}")
+            del new_manifest[stale]
+
+    # 2) Add/update changed reports.
     for report in REPORTS_DIR.glob("RE_*.json"):
         mtime = report.stat().st_mtime
-        if not force and manifest.get(report.name) == mtime:
-            continue  # already embedded, unchanged
+        prev = new_manifest.get(report.name)
+        if prev and prev.get("mtime") == mtime and not force:
+            continue
         try:
             data = json.loads(report.read_text(encoding="utf-8"))
         except Exception:
@@ -298,32 +414,60 @@ def _refresh_index_from_reports(force: bool = False) -> int:
             "file_name": data.get("file_name", report.stem),
             "vendor": (data.get("header") or {}).get("vendor_id", ""),
             "invoice_no": (data.get("header") or {}).get("invoice_no", ""),
+            "source_report": report.name,
         }
+        docs: list[Document] = []
+        ids: list[str] = []
         for chunk in splitter.split_json(data):
-            new_docs.append(Document(page_content=str(chunk), metadata=meta))
-        new_manifest[report.name] = mtime
+            docs.append(Document(page_content=str(chunk), metadata=meta))
+            ids.append(str(uuid.uuid4()))
+        if not docs:
+            continue
+        # Delete prior vectors for this report (if any) so re-process doesn't dup.
+        if db is not None and prev and prev.get("ids"):
+            try:
+                db.delete(ids=prev["ids"])
+            except Exception as e:
+                print(f"[index] stale-delete failed for {report.name}: {e}")
 
-    if not new_docs:
+        if db is None:
+            pending_first_batch.append((report.name, docs, ids))
+        else:
+            db.add_documents(docs, ids=ids)
+        new_manifest[report.name] = {"mtime": mtime, "ids": ids}
+        added_total += len(docs)
+
+    # If we had no pre-existing index, build it from the first batch.
+    if db is None and pending_first_batch:
+        all_docs: list[Document] = []
+        all_ids: list[str] = []
+        for _, docs, ids in pending_first_batch:
+            all_docs.extend(docs)
+            all_ids.extend(ids)
+        db = FAISS.from_documents(all_docs, embedding=embedding_model, ids=all_ids)
+
+    if db is None:
         return 0
 
-    index_file = DOC_DB_DIR / "index.faiss"
-    if index_file.exists() and not force:
-        db = FAISS.load_local(
-            str(DOC_DB_DIR) + "/",
-            embeddings=embedding_model,
-            allow_dangerous_deserialization=True,
-        )
-        db.add_documents(new_docs)
-    else:
-        db = FAISS.from_documents(new_docs, embedding=embedding_model)
     db.save_local(folder_path=str(DOC_DB_DIR) + "/")
     _save_manifest(new_manifest)
-    return len(new_docs)
+    return added_total
 
 
 @app.post("/rebuild-index")
 def rebuild_index():
     """Force a full rebuild of the FAISS index from outputs/reports/*.json."""
+    # Wipe existing index files so we truly rebuild from zero.
+    for p in DOC_DB_DIR.glob("index.*"):
+        try:
+            p.unlink()
+        except Exception:
+            pass
+    if MANIFEST_PATH.exists():
+        try:
+            MANIFEST_PATH.unlink()
+        except Exception:
+            pass
     n = _refresh_index_from_reports(force=True)
     if n == 0:
         raise HTTPException(400, "No reports found in outputs/reports/.")
@@ -337,7 +481,6 @@ class UploadUrlBody(BaseModel):
 
 @app.post("/upload-url")
 def upload_from_url(body: UploadUrlBody):
-    """Fetch a remote image/PDF URL and save into inbox/."""
     import urllib.request
     import urllib.parse
 
@@ -346,8 +489,6 @@ def upload_from_url(body: UploadUrlBody):
         raise HTTPException(400, "Only http(s) URLs are allowed.")
 
     parsed = urllib.parse.urlparse(url)
-    # Browser-like headers — many hosts return 403 to bare urllib User-Agents
-    # and to requests missing a Referer matching the asset's own origin.
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -415,11 +556,75 @@ def _load_db() -> Optional[FAISS]:
     )
 
 
+# ---------- Chat intent router --------------------------------------------
+
+_AGG_PATTERNS = re.compile(
+    r"\b(latest|most\s+recent|newest|oldest|earliest|"
+    r"how\s+many|count|number\s+of|total\s+spend|grand\s+total|sum\s+of|"
+    r"list\s+all|show\s+all|all\s+invoices|pending|approved|rejected|"
+    r"manual\s+review|needs?\s+review|flagged)\b",
+    re.IGNORECASE,
+)
+
+
+def _build_full_corpus_context() -> str:
+    """Aggregate every report's key fields into a compact table for the LLM.
+
+    Aggregate/temporal questions cannot be answered from k=5 semantic chunks —
+    pass the full set of report summaries so the model can count, sort, sum.
+    """
+    rows = []
+    for f in sorted(os.listdir(REPORTS_DIR)) if REPORTS_DIR.exists() else []:
+        if not (f.startswith("RE_") and f.endswith(".json")):
+            continue
+        try:
+            data = json.loads((REPORTS_DIR / f).read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        h = data.get("header") or {}
+        rows.append({
+            "file": f,
+            "invoice_no": h.get("invoice_no", ""),
+            "invoice_date": h.get("invoice_date", ""),
+            "vendor": h.get("vendor_id", ""),
+            "currency": h.get("currency", ""),
+            "total": h.get("total_amount", ""),
+            "recommendation": _canon_recommendation(data.get("recommendation")),
+            "status": _canon_status(data.get("status")),
+            "reasons": data.get("reasons") or [],
+        })
+    if not rows:
+        return "No invoices indexed yet."
+    return json.dumps(rows, ensure_ascii=False, indent=2)
+
+
+def _retrieve_context(query: str, db: FAISS) -> str:
+    """Choose context source based on query intent.
+
+    Aggregate/temporal → full corpus summary (cannot be answered from top-k).
+    Otherwise → top-5 semantic chunks.
+    """
+    if _AGG_PATTERNS.search(query):
+        return _build_full_corpus_context()
+    docs = db.similarity_search(query, k=5)
+    return "\n\n".join(d.page_content for d in docs) or "No relevant invoices found."
+
+
 @app.post("/chat")
 def chat(body: ChatBody):
     db = _load_db()
     if db is None:
         raise HTTPException(400, "No invoices indexed yet. Process invoices first.")
+    if _AGG_PATTERNS.search(body.query):
+        # Aggregate path: bypass the RAG subgraph (which is k=5 retrieval).
+        content = _build_full_corpus_context()
+        prompt = (
+            "Answer the user's question using ONLY the JSON list of invoices below. "
+            "Use markdown with tables when listing.\n\n"
+            f"## query\n{body.query}\n\n## invoices\n{content}"
+        )
+        resp = llm.invoke(prompt).content
+        return {"response": resp, "reviewed_response": {}}
     res = rag_chat(query=body.query, llm=llm, db=db)
     return {
         "response": res.get("response", ""),
@@ -429,18 +634,11 @@ def chat(body: ChatBody):
 
 @app.post("/chat/stream")
 def chat_stream(body: ChatBody):
-    """Stream the answer token-by-token via SSE.
-
-    Pipeline: synchronous retrieve → streaming generate. Reflection scoring
-    runs after the stream and is delivered as a final SSE event.
-    """
     db = _load_db()
     if db is None:
         raise HTTPException(400, "No invoices indexed yet. Process invoices first.")
 
-    # Step 1: retrieve relevant chunks (fast, synchronous).
-    docs = db.similarity_search(body.query, k=5)
-    content = "\n\n".join(d.page_content for d in docs) or "No relevant invoices found."
+    content = _retrieve_context(body.query, db)
 
     prompt = f"""
 You are a helpful invoice chat assistant. Answer the query using only the
@@ -466,9 +664,7 @@ If the query is unrelated to invoices, reply exactly:
                 if not token:
                     continue
                 full.append(token)
-                # SSE event: token
                 yield f"event: token\ndata: {json.dumps(token)}\n\n"
-            # Final reflection (best-effort, never fail the stream).
             scores = {}
             try:
                 full_text = "".join(full)

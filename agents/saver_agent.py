@@ -1,44 +1,47 @@
-import json
-from langchain_text_splitters import RecursiveCharacterTextSplitter, RecursiveJsonSplitter
-from langchain_core.documents import Document
+from agents.reporting_agent import (
+    _atomic_write_json,
+    STATUS_APPROVED,
+    STATUS_REJECTED,
+    STATUS_MANUAL,
+    STATUS_NOT_REQUIRED,
+)
 
-from langchain_community.vectorstores.faiss import FAISS
-import os
-from langchain_core.documents import Document
-from typing import List
-from graph_utils.embeddings import get_embedding_model
-embedding_model = get_embedding_model()
+
+def _normalize_decision_status(raw) -> str:
+    """Map any incoming status form to the canonical lowercase enum.
+
+    The HITL interrupt resumes with 'accept'/'reject' (legacy) or
+    'approve'/'reject'; reporting pre-fills 'approved'/'rejected'/'manual_review'.
+    Anything else is treated as still-pending manual review.
+    """
+    s = (str(raw) if raw is not None else "").lower().strip().replace(" ", "_")
+    if s in {"accept", "approve", "approved"}:
+        return STATUS_APPROVED
+    if s in {"reject", "rejected"}:
+        return STATUS_REJECTED
+    if s in {"manual_review", "review"}:
+        return STATUS_MANUAL
+    if s in {"not_required", ""}:
+        return s or STATUS_NOT_REQUIRED
+    return s
 
 
 def final_saver(state):
-    print("[INFO] Saving to Vector DB")
-    result=state['invoice_json']
-    result["file_name"]=state["file_name"]
-    result.update(state['metadata'])
-    result.update(state['system_report'])
-    result.update({'human_report':state['human_report']})
-    result.update({"status":state['status']})
-    result.update({"remarks":state['remarks']})
-    with open(f"outputs/reports/RE_{state['file_name']}.json", "w", encoding="utf-8") as f:
-        json.dump(result,f)
-
-    #vector store 
-    splitter=RecursiveJsonSplitter(max_chunk_size=1999)
-    chunks=splitter.split_json(result)
-    docs: List[Document]=[]
-    for chunk in chunks:
-        doc=Document(page_content=str(chunk),metadata=state['metadata'])
-        docs.append(doc)
-    index_file=os.path.join("docDB/","index.faiss")
-    if os.path.exists(index_file):
-        db=FAISS.load_local(
-            folder_path="docDB/",
-            embeddings=embedding_model,
-            allow_dangerous_deserialization=True
-        )
-        db.add_documents(docs)
-    else:
-        db=FAISS.from_documents(docs,embedding=embedding_model)
-    db.save_local(folder_path="docDB/")
-    
+    """Persist the final report JSON. FAISS indexing is centralized in
+    api.server._refresh_index_from_reports (single writer) — do NOT add to
+    FAISS here, that would produce duplicate vectors on every re-process.
+    """
+    print("[INFO] Saving final report")
+    state["status"] = _normalize_decision_status(state.get("status"))
+    if "remarks" not in state or state["remarks"] is None:
+        state["remarks"] = STATUS_NOT_REQUIRED
+    result = dict(state["invoice_json"])
+    result["file_name"] = state["file_name"]
+    result.update(state["metadata"])
+    result.update(state["system_report"])
+    result["human_report"] = state["human_report"]
+    result["status"] = state["status"]
+    result["remarks"] = state["remarks"]
+    result["pipeline_status"] = "ok"
+    _atomic_write_json(f"outputs/reports/RE_{state['file_name']}.json", result)
     return state
