@@ -12,8 +12,7 @@ def extract_pdf_content(file_path:str)->str:
     """
     try:
         with pdfplumber.open(file_path) as pdf:
-            for page in pdf.pages:
-                text=page.extract_text()
-        return text
+            parts = [page.extract_text() or "" for page in pdf.pages]
+        return "\n".join(parts)
     except Exception as e:
-        return f"Error: {str(e)}"    
+        return f"Error: {str(e)}"

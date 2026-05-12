@@ -127,43 +127,29 @@ Example format:
     except:
         raise ValueError("Error in paring Business Validation data")
 
-def validatedata(invoice: Dict[str, Any], rules: Dict[str, Any]) -> Dict[str, Any]:
-    prompt = f"""
-    You are an invoice validator agent. Your goal is to identify if there are any missing fields
-    or data based on the given invoice data and rules that are provided below.
-    **Invoice Data:**
+def validatedata(invoice: Dict[str, Any], rules: Dict[str, Any]) -> list:
+    """Deterministic required-field check. No LLM call.
 
-    {invoice}
-
-    **Validation Rules:**
-
-    {rules["required_fields"]}
-    {rules["data_types"]}
-    
-    **Task:**
-    Please return a **list of missing fields** (in the format of a list of strings like ["invoice_no", "total_amount"]). 
-    If no fields are missing, return an empty list `[]`.
-    Do **not** add any extra explanation. Just return the list of missing fields.
-
-    strictly return the json as output
+    A field is "missing" if the key is absent or its value is empty (empty
+    string, None, or empty list). Optional fields are intentionally ignored.
     """
-    
+    required = rules.get("required_fields", {}) or {}
+    header = invoice.get("header", {}) or {}
+    line_items = invoice.get("line_item", []) or []
 
-    llm = LLM_Gateway("aa")
-    res = llm.invoke(prompt).strip()
+    missing: list = []
+    for field in required.get("header", []) or []:
+        val = header.get(field)
+        if val in (None, "", []):
+            missing.append(field)
 
+    required_li = required.get("line_item", []) or []
+    if required_li and line_items:
+        for i, li in enumerate(line_items):
+            for field in required_li:
+                val = (li or {}).get(field)
+                if val in (None, "", []):
+                    missing.append(f"line_item[{i}].{field}")
 
-    res = res.strip('```') 
-    res = res.replace('json', '').strip()  
-    
- 
-    try:
-        missing_fields = json.loads(res)  
-        if not isinstance(missing_fields, list):
-            missing_fields = []  
-    except json.JSONDecodeError:
-        print(f"Error parsing response: {res}")
-        missing_fields = [] 
-
-    return missing_fields
+    return missing
 

@@ -26,6 +26,7 @@ state_memory.db-wal
 
 # Generated reports + vector store (regenerate at runtime)
 outputs/added.json
+outputs/errors/
 docDB/index.faiss
 docDB/index.pkl
 

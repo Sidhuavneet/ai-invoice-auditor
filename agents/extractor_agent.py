@@ -33,39 +33,48 @@ def structure_content(text):
 
     llm=LLM_Gateway('reason')
     structured_prompt=f"""
-    You are helpfull Ai Agent.
-    You retrieve header(vendor_name, invoice_number, invoice_date, po_reference, currency, total_amount), 
-    line_item(item code,description,quantity,unit,total) from invoice into a python dictionary.Only if they exist.
+    You are a helpful AI agent that extracts structured data from financial documents.
+    The document may be a traditional invoice OR a receipt / ride booking / transaction confirmation.
+    Map flexibly:
+      - vendor_id: merchant / service provider / company name (e.g. "Rapido", "Uber", "Amazon"). Never use the customer's name.
+      - invoice_no: invoice number, receipt number, ride ID, booking ID, or transaction ID.
+      - invoice_date: invoice date, ride time, booking time, or transaction timestamp.
+      - po_reference: PO number if present, else empty.
+      - currency: ISO code if printed, else infer from symbol (₹=INR, $=USD, €=EUR, £=GBP).
+      - total_amount: final amount paid / selected price / total fare as a number (strip currency symbols and commas).
+    Extract line_item only when itemized rows are present; receipts with a single total have an empty list.
 
     invoice: {text}
 
-    No salutaions. 
-    only return a dictionary object and nothing else  
-    if some values are missing keep them empty.
-    don't halucinate.
-    return the invoice data only.                                             
-    output structure:     dict(
-                    "header": dict(
-                        "invoice_no": invoice_number,
-                        "invoice_date": invoice_date,
-                        "vendor_id": vendor_name,
-                        "currency": currency,
-                        "po_reference":po_reference,
-                        "total_amount":total_amount
-                    ),
-                    "line_item" : list[dict(
-                                    "item_code": item code,
-                                    "description": description,
-                                    "qty": quantity,
-                                    "unit_price": unit,
-                                    "total": total      
-                                                   )]                                                                                                              
+    Rules:
+    - Return ONLY a JSON object, no prose, no markdown fence.
+    - Keep missing values as empty strings (or empty list for line_item).
+    - Do not hallucinate.
+
+    output structure:
+    {{
+        "header": {{
+            "invoice_no": "",
+            "invoice_date": "",
+            "vendor_id": "",
+            "currency": "",
+            "po_reference": "",
+            "total_amount": ""
+        }},
+        "line_item": [
+            {{"item_code": "", "description": "", "qty": "", "unit_price": "", "total": ""}}
+        ]
+    }}
     """
     response=llm.invoke(structured_prompt)
     try:
         match=re.search(r"\{.*\}",response,re.S)
         json_s=match.group(0) if match else ""
         structured_data=json.loads(json_s)
-        return structured_data
     except Exception as e:
         raise ValueError(f"Error in structure node \n{e}")
+    structured_data.setdefault("header", {})
+    structured_data.setdefault("line_item", [])
+    if structured_data["line_item"] is None:
+        structured_data["line_item"] = []
+    return structured_data

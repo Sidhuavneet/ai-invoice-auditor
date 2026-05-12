@@ -10,11 +10,19 @@
 # -------------------------------------------------------------
 required_fields:
   header:
-    - invoice_no
-    - invoice_date
     - vendor_id
     - currency
     - total_amount
+  # line_item fields are validated only when at least one line item is present.
+  # Receipts and single-amount documents (no itemized breakdown) are accepted.
+  line_item: []
+
+# Fields that are nice to have but won't block auto-approval if absent.
+optional_fields:
+  header:
+    - invoice_no
+    - invoice_date
+    - po_reference
   line_item:
     - item_code
     - description
@@ -64,14 +72,18 @@ currency_symbol_map:
 # 5. Validation Policies
 # -------------------------------------------------------------
 validation_policies:
-  # Missing mandatory field handling
+  # Missing optional field: ignore. Missing required field still flags.
   missing_field_action: "flag"
+  missing_optional_field_action: "ignore"
   # If totals mismatch beyond tolerance
   total_mismatch_action: "manual_review"
   # For currency not in accepted list
   invalid_currency_action: "reject"
-  # Auto-approval threshold (if no discrepancy & translation confidence ≥ 0.95)
-  auto_approve_confidence_threshold: 0.95
+  # Auto-approval threshold (translation confidence)
+  auto_approve_confidence_threshold: 0.85
+  # Documents without line items (receipts, single-amount bills) auto-approve
+  # provided required header fields are present.
+  allow_no_line_items: true
 
 # -------------------------------------------------------------
 # 6. Reporting Parameters

@@ -23,10 +23,12 @@ from langchain_groq import ChatGroq
 REPORTS_DIR = Path("outputs/reports")
 INBOX_DIR = Path("inbox")
 DOC_DB_DIR = Path("docDB")
+ERRORS_DIR = Path("outputs/errors")
 
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 INBOX_DIR.mkdir(parents=True, exist_ok=True)
 DOC_DB_DIR.mkdir(parents=True, exist_ok=True)
+ERRORS_DIR.mkdir(parents=True, exist_ok=True)
 
 llm = ChatGroq(
     model=os.environ.get("GROQ_REASON_MODEL", "llama-3.3-70b-versatile"),
@@ -129,14 +131,39 @@ def list_invoices():
 
 @app.get("/invoices/{name}")
 def get_invoice(name: str):
-    # Existing report? return as-is.
+    # 1) Direct report name (RE_*.json) — return it.
     path = REPORTS_DIR / name
     if path.exists() and name.endswith(".json"):
         with open(path, "r") as f:
             return json.load(f)
-    # Pending inbox file (graph paused at human review or not yet run).
+    # 2) Inbox filename (e.g. "Actual_invoice.pdf") — check if its report exists
+    #    yet. After HITL approval, the graph runs Saver which writes
+    #    RE_<stem>.json; the UI keeps the original inbox name in its URL.
+    if not name.endswith(".json"):
+        stem = name[: name.rfind(".")] if "." in name else name
+        report_path = REPORTS_DIR / f"RE_{stem}.json"
+        if report_path.exists():
+            with open(report_path, "r") as f:
+                return json.load(f)
+    # 3) Still pending (graph paused or not yet run) — or failed.
     inbox_path = INBOX_DIR / name
     if inbox_path.exists():
+        stem = name[: name.rfind(".")] if "." in name else name
+        err_path = ERRORS_DIR / f"{stem}.json"
+        if err_path.exists():
+            try:
+                err = json.loads(err_path.read_text(encoding="utf-8"))
+            except Exception:
+                err = {"error": "unknown processing error"}
+            return {
+                "file_name": name,
+                "header": {},
+                "line_item": [],
+                "discrepancy_report": {"discrepancy_summary": []},
+                "status": "error",
+                "recommendation": "error",
+                "human_report": f"Processing failed: {err.get('error','')}. Fix the document or pipeline and re-run /process.",
+            }
         return {
             "file_name": name,
             "header": {},
@@ -186,7 +213,10 @@ def process_inbox():
         file_path = f"{target}/{fname}"
         metadata_path = f"{target}/{paths['meta']}" if paths["meta"] else ""
         file_name = fname[: fname.rfind(".")]
+        err_path = ERRORS_DIR / f"{file_name}.json"
         try:
+            if err_path.exists():
+                err_path.unlink()
             graph_app.invoke(
                 {
                     "file_path": file_path,
@@ -197,9 +227,14 @@ def process_inbox():
             )
             processed += 1
         except Exception as e:
-            # One bad file shouldn't block the rest. Record it and keep going.
-            errors.append(f"{fname}: {e}")
+            # One bad file shouldn't block the rest. Record it for the UI and keep going.
+            msg = f"{type(e).__name__}: {e}"
+            errors.append(f"{fname}: {msg}")
             failed.append(fname)
+            try:
+                err_path.write_text(json.dumps({"file": fname, "error": msg}), encoding="utf-8")
+            except Exception:
+                pass
             continue
 
     # Only after the request completes, unmark failed files so the user can

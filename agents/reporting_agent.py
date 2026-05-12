@@ -40,13 +40,16 @@ def generate_system_report(content,validation_policies,reporting):
     validation_policies: {validation_policies}
 
     No salutations only provide a json ouput nothing else,
-    output: {{"recomendation": "Approve"|"Manual Review"|"Reject"}}
+    output: {{"recommendation": "Approve"|"Manual Review"|"Reject"}}
     """
     response=llm.invoke(prompt)
     try:
         match=re.search(r"\{.*\}",response,re.S)
         json_s=match.group(0) if match else ""
         system_report=json.loads(json_s)
+        if "recommendation" not in system_report and "recomendation" in system_report:
+            system_report["recommendation"] = system_report.pop("recomendation")
+        system_report.setdefault("recommendation", "Manual Review")
         return system_report
     except Exception as e:
         raise ValueError("Error while generating system report ")
