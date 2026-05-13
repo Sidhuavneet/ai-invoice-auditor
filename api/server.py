@@ -20,7 +20,7 @@ from graph import app as graph_app
 from graph import resumer
 from graph_utils import mailbox_utils
 from graph_utils.embeddings import get_embedding_model
-from langchain_community.vectorstores.faiss import FAISS
+from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_groq import ChatGroq
 
@@ -28,6 +28,7 @@ REPORTS_DIR = Path("outputs/reports")
 INBOX_DIR = Path("inbox")
 PROCESSED_DIR = INBOX_DIR / "processed"
 DOC_DB_DIR = Path("docDB")
+CHROMA_COLLECTION = "invoice_reports"
 ERRORS_DIR = Path("outputs/errors")
 
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -48,8 +49,8 @@ app = FastAPI(title="AI Invoice Auditor API")
 
 @app.on_event("startup")
 def _bootstrap_index():
-    """Build FAISS from existing reports on first boot so chat is live immediately."""
-    if (DOC_DB_DIR / "index.faiss").exists():
+    """Build Chroma index from existing reports on first boot so chat is live immediately."""
+    if (DOC_DB_DIR / "chroma.sqlite3").exists():
         return
     try:
         n = _refresh_index_from_reports()
@@ -378,7 +379,7 @@ def process_inbox():
     }
 
 
-# ---------- FAISS index (single writer, per-report vector IDs) ------------
+# ---------- Chroma index (single writer, per-report vector IDs) ----------
 
 MANIFEST_PATH = DOC_DB_DIR / "manifest.json"
 
@@ -409,8 +410,17 @@ def _save_manifest(m: dict) -> None:
     _atomic_write_json(str(MANIFEST_PATH), m)
 
 
+def _open_chroma() -> Chroma:
+    """Open (or create) the persistent Chroma collection used by chat."""
+    return Chroma(
+        collection_name=CHROMA_COLLECTION,
+        embedding_function=embedding_model,
+        persist_directory=str(DOC_DB_DIR),
+    )
+
+
 def _refresh_index_from_reports(force: bool = False) -> int:
-    """Embed only reports that are new or changed. Single writer for FAISS.
+    """Embed only reports that are new or changed. Single writer for the vector DB.
 
     On change, deletes the old vector IDs for that report before re-adding,
     so re-processing a file does not accumulate duplicates.
@@ -420,18 +430,9 @@ def _refresh_index_from_reports(force: bool = False) -> int:
     splitter = RecursiveJsonSplitter(max_chunk_size=1999)
     manifest = {} if force else _load_manifest()
 
-    index_file = DOC_DB_DIR / "index.faiss"
-    db: Optional[FAISS] = None
-    if index_file.exists() and not force:
-        db = FAISS.load_local(
-            str(DOC_DB_DIR) + "/",
-            embeddings=embedding_model,
-            allow_dangerous_deserialization=True,
-        )
-
+    db = _open_chroma()
     new_manifest = dict(manifest)
     added_total = 0
-    pending_first_batch: list[tuple[str, list[Document], list[str]]] = []
 
     current_reports = {p.name for p in REPORTS_DIR.glob("RE_*.json")}
 
@@ -439,7 +440,7 @@ def _refresh_index_from_reports(force: bool = False) -> int:
     for stale in list(new_manifest.keys()):
         if stale not in current_reports:
             ids = new_manifest[stale].get("ids") or []
-            if db is not None and ids:
+            if ids:
                 try:
                     db.delete(ids=ids)
                 except Exception as e:
@@ -470,45 +471,28 @@ def _refresh_index_from_reports(force: bool = False) -> int:
         if not docs:
             continue
         # Delete prior vectors for this report (if any) so re-process doesn't dup.
-        if db is not None and prev and prev.get("ids"):
+        if prev and prev.get("ids"):
             try:
                 db.delete(ids=prev["ids"])
             except Exception as e:
                 print(f"[index] stale-delete failed for {report.name}: {e}")
-
-        if db is None:
-            pending_first_batch.append((report.name, docs, ids))
-        else:
-            db.add_documents(docs, ids=ids)
+        db.add_documents(docs, ids=ids)
         new_manifest[report.name] = {"mtime": mtime, "ids": ids}
         added_total += len(docs)
 
-    # If we had no pre-existing index, build it from the first batch.
-    if db is None and pending_first_batch:
-        all_docs: list[Document] = []
-        all_ids: list[str] = []
-        for _, docs, ids in pending_first_batch:
-            all_docs.extend(docs)
-            all_ids.extend(ids)
-        db = FAISS.from_documents(all_docs, embedding=embedding_model, ids=all_ids)
-
-    if db is None:
-        return 0
-
-    db.save_local(folder_path=str(DOC_DB_DIR) + "/")
     _save_manifest(new_manifest)
     return added_total
 
 
 @app.post("/rebuild-index")
 def rebuild_index():
-    """Force a full rebuild of the FAISS index from outputs/reports/*.json."""
-    # Wipe existing index files so we truly rebuild from zero.
-    for p in DOC_DB_DIR.glob("index.*"):
-        try:
-            p.unlink()
-        except Exception:
-            pass
+    """Force a full rebuild of the Chroma index from outputs/reports/*.json."""
+    # Drop the entire collection so we rebuild from zero.
+    try:
+        db = _open_chroma()
+        db.delete_collection()
+    except Exception as e:
+        print(f"[rebuild] drop-collection failed: {e}")
     if MANIFEST_PATH.exists():
         try:
             MANIFEST_PATH.unlink()
@@ -604,15 +588,18 @@ async def upload_invoice(file: UploadFile = File(...)):
     return {"ok": True, "filename": dest.name}
 
 
-def _load_db() -> Optional[FAISS]:
-    index_file = DOC_DB_DIR / "index.faiss"
-    if not index_file.exists():
+def _load_db() -> Optional[Chroma]:
+    # Chroma writes a sqlite file on first add; absent file = nothing indexed.
+    if not (DOC_DB_DIR / "chroma.sqlite3").exists():
         return None
-    return FAISS.load_local(
-        str(DOC_DB_DIR) + "/",
-        embeddings=embedding_model,
-        allow_dangerous_deserialization=True,
-    )
+    db = _open_chroma()
+    # An empty collection is equivalent to "not indexed yet" for chat purposes.
+    try:
+        if db._collection.count() == 0:
+            return None
+    except Exception:
+        pass
+    return db
 
 
 # ---------- Chat intent router --------------------------------------------
@@ -657,7 +644,7 @@ def _build_full_corpus_context() -> str:
     return json.dumps(rows, ensure_ascii=False, indent=2)
 
 
-def _retrieve_context(query: str, db: FAISS) -> str:
+def _retrieve_context(query: str, db: Chroma) -> str:
     """Choose context source based on query intent.
 
     Aggregate/temporal → full corpus summary (cannot be answered from top-k).

@@ -27,9 +27,9 @@ def _normalize_decision_status(raw) -> str:
 
 
 def final_saver(state):
-    """Persist the final report JSON. FAISS indexing is centralized in
-    api.server._refresh_index_from_reports (single writer) — do NOT add to
-    FAISS here, that would produce duplicate vectors on every re-process.
+    """Persist the final report JSON. Vector indexing is centralized in
+    api.server._refresh_index_from_reports (single writer into Chroma) — do
+    NOT add vectors here, that would produce duplicates on every re-process.
     """
     print("[INFO] Saving final report")
     state["status"] = _normalize_decision_status(state.get("status"))

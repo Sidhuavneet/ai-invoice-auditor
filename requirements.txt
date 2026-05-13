@@ -14,7 +14,8 @@ langchain-huggingface==0.1.2
 langchain-text-splitters==0.3.2
 
 sentence-transformers==3.2.1
-faiss-cpu==1.9.0
+chromadb==0.5.20
+langchain-chroma==0.1.4
 
 pytesseract==0.3.13
 Pillow==11.0.0

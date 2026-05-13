@@ -27,8 +27,9 @@ state_memory.db-wal
 # Generated reports + vector store (regenerate at runtime)
 outputs/added.json
 outputs/errors/
-docDB/index.faiss
-docDB/index.pkl
+docDB/chroma.sqlite3*
+docDB/*/
+docDB/manifest.json
 
 # Next.js / web
 web/node_modules
