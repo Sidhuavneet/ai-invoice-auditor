@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { getInvoice, submitDecision } from "@/lib/api";
+import { getInvoice, invoiceFileUrl, submitDecision } from "@/lib/api";
 import { Icon, Spinner, StatusPill, Toast, formatCurrency } from "@/lib/ui";
 
 type LineItem = Record<string, any>;
@@ -145,6 +145,8 @@ export default function InvoiceDetailPage() {
         </div>
       </header>
 
+      <InvoicePreviewButton name={name} />
+
       {discrepancies.length > 0 && (
         <section className="card border-amber-200 bg-amber-50/30 p-5">
           <h2 className="mb-3 flex items-center gap-2 text-base font-semibold text-amber-900">
@@ -259,6 +261,82 @@ export default function InvoiceDetailPage() {
         </section>
       )}
     </div>
+  );
+}
+
+function InvoicePreviewButton({ name }: { name: string }) {
+  const [open, setOpen] = useState(false);
+  const url = invoiceFileUrl(name);
+  const ext = name.toLowerCase().slice(name.lastIndexOf("."));
+  const isImage = [".png", ".jpg", ".jpeg"].includes(ext);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("keydown", onKey);
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = "";
+    };
+  }, [open]);
+
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        className="btn-ghost"
+        title="Preview original document"
+      >
+        <Icon name="file" className="h-4 w-4" /> Preview Document
+      </button>
+      {open && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-stone-900/70 p-4"
+          onClick={() => setOpen(false)}
+        >
+          <div
+            className="relative flex h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-stone-200 px-4 py-2.5">
+              <div className="flex items-center gap-2 text-sm font-medium truncate">
+                <Icon name="file" className="h-4 w-4 text-indigo-500" />
+                <span className="truncate">{name}</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <a
+                  href={url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 text-xs text-stone-500 hover:text-indigo-600"
+                >
+                  <Icon name="external" className="h-3 w-3" /> Open in tab
+                </a>
+                <button
+                  onClick={() => setOpen(false)}
+                  className="text-stone-500 hover:text-stone-900"
+                  aria-label="close"
+                >
+                  <Icon name="x" />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-auto bg-stone-100">
+              {isImage ? (
+                <img
+                  src={url}
+                  alt={name}
+                  className="mx-auto h-full max-h-full object-contain"
+                />
+              ) : (
+                <iframe src={url} title={name} className="h-full w-full" />
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 

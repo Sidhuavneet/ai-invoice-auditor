@@ -9,7 +9,7 @@ from typing import Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 load_dotenv()
@@ -216,6 +216,46 @@ def get_invoice(name: str):
     raise HTTPException(404, "Invoice not found")
 
 
+@app.get("/invoices/{name}/file")
+def get_invoice_file(name: str):
+    """Stream the original uploaded file for preview.
+
+    Looks in inbox/, inbox/processed/, then falls back to matching by stem
+    (so the UI can pass either the inbox filename or RE_<stem>.json).
+    """
+    # Strip directory components to prevent traversal.
+    safe = Path(name).name
+    if safe.endswith(".json") and safe.startswith("RE_"):
+        safe = safe[3:-5]
+    stem = safe[: safe.rfind(".")] if "." in safe else safe
+    candidates: list[Path] = []
+    # Exact name match first.
+    for base in (INBOX_DIR, PROCESSED_DIR):
+        candidates.append(base / safe)
+    # Stem match across known extensions.
+    for base in (INBOX_DIR, PROCESSED_DIR):
+        for ext in (".pdf", ".png", ".jpg", ".jpeg", ".docx"):
+            candidates.append(base / f"{stem}{ext}")
+    for c in candidates:
+        if c.is_file():
+            media = {
+                ".pdf": "application/pdf",
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            }.get(c.suffix.lower(), "application/octet-stream")
+            # content_disposition_type="inline" so browsers render PDFs/images
+            # in an iframe/img instead of forcing a download prompt.
+            return FileResponse(
+                str(c),
+                media_type=media,
+                filename=c.name,
+                content_disposition_type="inline",
+            )
+    raise HTTPException(404, "Source file not found")
+
+
 @app.post("/invoices/{name}/decision")
 def submit_decision(name: str, body: DecisionBody):
     decided = _canon_status(body.status)
@@ -245,6 +285,12 @@ def _move_to_processed(stem: str) -> None:
         if src.exists() and src.is_file():
             try:
                 shutil.move(str(src), str(PROCESSED_DIR / src.name))
+                # Also drop from added.json so re-uploading the same filename
+                # later triggers a fresh /process pass.
+                try:
+                    mailbox_utils.unmark(src.name)
+                except Exception:
+                    pass
             except Exception as e:
                 print(f"[processed-move] {src.name}: {e}")
     meta = INBOX_DIR / f"{stem}.meta.json"
@@ -542,6 +588,19 @@ async def upload_invoice(file: UploadFile = File(...)):
     dest = INBOX_DIR / (file.filename or "upload" + ext)
     with open(dest, "wb") as out:
         shutil.copyfileobj(file.file, out)
+    # A fresh upload is an explicit request to re-process. Clear any stale
+    # poller bookkeeping AND any previous report so the next /process picks it up.
+    try:
+        mailbox_utils.unmark(dest.name)
+    except Exception:
+        pass
+    stem = dest.stem
+    old_report = REPORTS_DIR / f"RE_{stem}.json"
+    if old_report.exists():
+        try:
+            old_report.unlink()
+        except Exception:
+            pass
     return {"ok": True, "filename": dest.name}
 
 

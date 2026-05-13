@@ -43,6 +43,10 @@ export async function processInbox(): Promise<{
   return handle(res);
 }
 
+export function invoiceFileUrl(name: string): string {
+  return `${API_URL}/invoices/${encodeURIComponent(name)}/file`;
+}
+
 export async function submitDecision(
   name: string,
   status: "accept" | "reject",

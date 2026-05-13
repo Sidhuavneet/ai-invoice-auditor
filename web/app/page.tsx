@@ -195,10 +195,12 @@ export default function DashboardPage() {
               onChange={onUpload}
             />
           </label>
-          <button onClick={onProcess} disabled={processing} className="btn-primary">
-            {processing ? <Spinner /> : <Icon name="play" />}
-            {processing ? "Processing…" : "Run Pipeline"}
-          </button>
+          {(processing || stats.pending > 0) && (
+            <button onClick={onProcess} disabled={processing} className="btn-primary">
+              {processing ? <Spinner /> : <Icon name="play" />}
+              {processing ? "Processing…" : `Re-scan Inbox (${stats.pending})`}
+            </button>
+          )}
         </div>
       </header>
 
