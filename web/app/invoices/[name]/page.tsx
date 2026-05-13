@@ -138,11 +138,10 @@ export default function InvoiceDetailPage() {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-4 p-5 md:grid-cols-4">
+        <div className="grid grid-cols-2 gap-4 p-5 md:grid-cols-3">
           <Field label="Invoice #" value={header.invoice_no} />
           <Field label="Date" value={header.invoice_date} />
           <Field label="Vendor" value={header.vendor_id} />
-          <Field label="PO Reference" value={header.po_reference} />
         </div>
       </header>
 

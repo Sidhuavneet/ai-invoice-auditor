@@ -59,11 +59,6 @@ export async function submitDecision(
   return handle(res);
 }
 
-export async function rebuildIndex(): Promise<{ ok: boolean; indexed: number; files: string[] }> {
-  const res = await fetch(`${API_URL}/rebuild-index`, { method: "POST" });
-  return handle(res);
-}
-
 export async function uploadInvoice(file: File): Promise<{ ok: boolean; filename: string }> {
   const fd = new FormData();
   fd.append("file", file);

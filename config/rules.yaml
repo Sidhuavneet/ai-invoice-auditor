@@ -22,7 +22,6 @@ optional_fields:
   header:
     - invoice_no
     - invoice_date
-    - po_reference
   line_item:
     - item_code
     - description

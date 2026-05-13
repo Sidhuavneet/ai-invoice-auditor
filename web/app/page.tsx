@@ -6,7 +6,6 @@ import {
   InvoiceSummary,
   listInvoices,
   processInbox,
-  rebuildIndex,
   uploadFromUrl,
   uploadInvoice,
 } from "@/lib/api";
@@ -25,7 +24,6 @@ export default function DashboardPage() {
   const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState(false);
-  const [rebuilding, setRebuilding] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -81,20 +79,6 @@ export default function DashboardPage() {
       setError(e.message);
     } finally {
       setProcessing(false);
-    }
-  }
-
-  async function onRebuild() {
-    setRebuilding(true);
-    setMessage(null);
-    setError(null);
-    try {
-      const res = await rebuildIndex();
-      setMessage(`Rebuilt index from ${res.indexed} report${res.indexed === 1 ? "" : "s"}. Chat is ready.`);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setRebuilding(false);
     }
   }
 
@@ -200,15 +184,6 @@ export default function DashboardPage() {
           <button onClick={refresh} className="btn-ghost" title="Refresh">
             <Icon name="refresh" />
           </button>
-          <button
-            onClick={onRebuild}
-            disabled={rebuilding}
-            className="btn-ghost"
-            title="Rebuild FAISS index from existing reports (fixes chat)"
-          >
-            {rebuilding ? <Spinner /> : <Icon name="sparkles" />}
-            {rebuilding ? "Rebuilding…" : "Rebuild Chat Index"}
-          </button>
           <label className="btn-ghost cursor-pointer">
             {uploading ? <Spinner /> : <Icon name="upload" />}
             {uploading ? "Uploading…" : "Upload"}
@@ -222,7 +197,7 @@ export default function DashboardPage() {
           </label>
           <button onClick={onProcess} disabled={processing} className="btn-primary">
             {processing ? <Spinner /> : <Icon name="play" />}
-            {processing ? "Processing…" : "Process Inbox"}
+            {processing ? "Processing…" : "Run Pipeline"}
           </button>
         </div>
       </header>
