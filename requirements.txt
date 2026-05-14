@@ -12,6 +12,7 @@ langchain-community==0.3.7
 langchain-groq==0.2.1
 langchain-huggingface==0.1.2
 langchain-text-splitters==0.3.2
+langsmith==0.1.147
 
 sentence-transformers==3.2.1
 chromadb==0.5.20
