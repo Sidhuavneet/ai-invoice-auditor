@@ -131,6 +131,202 @@ def health():
     return {"ok": True}
 
 
+def _to_float_safe(val) -> float:
+    if val is None or val == "":
+        return 0.0
+    if isinstance(val, (int, float)):
+        return float(val)
+    s = str(val).strip()
+    for ch in ("₹", "$", "€", "£", ",", " "):
+        s = s.replace(ch, "")
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
+
+
+@app.get("/stats")
+def stats():
+    """Aggregate stats across all reports for the analytics dashboard.
+
+    Returns counts, status distribution, top vendors, spend timeline,
+    discrepancy reasons, and simple anomalies — all in one round-trip
+    so the dashboard doesn't have to compute things client-side.
+    """
+    from collections import Counter, defaultdict
+    from statistics import median, pstdev
+
+    reports = []
+    if REPORTS_DIR.exists():
+        for f in sorted(os.listdir(REPORTS_DIR)):
+            if not (f.startswith("RE_") and f.endswith(".json")):
+                continue
+            try:
+                data = json.loads((REPORTS_DIR / f).read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            reports.append(data)
+
+    pending_count = 0
+    if INBOX_DIR.exists():
+        exts = (".pdf", ".docx", ".png", ".jpg", ".jpeg")
+        report_stems = {r.get("file_name", "") for r in reports}
+        for f in sorted(os.listdir(INBOX_DIR)):
+            full = INBOX_DIR / f
+            if not full.is_file():
+                continue
+            if not f.lower().endswith(exts):
+                continue
+            stem = f[: f.rfind(".")]
+            if stem not in report_stems:
+                pending_count += 1
+
+    total = len(reports)
+    status_counts: Counter = Counter()
+    spend_by_currency: dict[str, float] = defaultdict(float)
+    vendor_spend: dict[str, float] = defaultdict(float)
+    vendor_counts: Counter = Counter()
+    vendor_currency: dict[str, str] = {}
+    spend_by_date: dict[str, float] = defaultdict(float)
+    reason_counter: Counter = Counter()
+    confidences: list[float] = []
+    invoice_totals_by_vendor: dict[str, list[float]] = defaultdict(list)
+    line_item_count = 0
+    auto_approved = 0
+    manual_review = 0
+    rejected_count = 0
+    approved_count = 0
+
+    for r in reports:
+        st = _canon_status(r.get("status"))
+        rec = _canon_recommendation(r.get("recommendation"))
+        status_counts[st or "unknown"] += 1
+        if st == "approved":
+            approved_count += 1
+            if rec == "approve":
+                auto_approved += 1
+        elif st == "rejected":
+            rejected_count += 1
+        elif st == "manual_review":
+            manual_review += 1
+
+        h = r.get("header") or {}
+        total_amt = _to_float_safe(h.get("total_amount"))
+        cur = (h.get("currency") or "").strip().upper() or "USD"
+        if total_amt:
+            spend_by_currency[cur] += total_amt
+            vendor = (h.get("vendor_id") or "Unknown").strip() or "Unknown"
+            vendor_spend[vendor] += total_amt
+            vendor_counts[vendor] += 1
+            vendor_currency.setdefault(vendor, cur)
+            invoice_totals_by_vendor[vendor].append(total_amt)
+        date = h.get("invoice_date") or ""
+        if date:
+            spend_by_date[str(date)[:10]] += total_amt
+
+        reasons = r.get("reasons") or []
+        for reason in reasons:
+            # Group similar reason strings into categories.
+            rs = str(reason).lower()
+            if "currency" in rs:
+                key = "Currency issue"
+            elif "missing" in rs:
+                key = "Missing field"
+            elif "translation confidence" in rs:
+                key = "Low translation confidence"
+            elif "future" in rs:
+                key = "Future-dated"
+            elif "discrepanc" in rs or "erp" in rs:
+                key = "ERP discrepancy"
+            elif "total" in rs or "math" in rs or "sum" in rs:
+                key = "Total mismatch"
+            else:
+                key = "Other"
+            reason_counter[key] += 1
+
+        try:
+            confidences.append(float(r.get("translation_confidence", 1.0) or 0.0))
+        except Exception:
+            pass
+        line_item_count += len(r.get("line_item") or [])
+
+    top_vendors = []
+    for vendor, spend in sorted(vendor_spend.items(), key=lambda kv: -kv[1])[:8]:
+        top_vendors.append({
+            "vendor": vendor,
+            "spend": round(spend, 2),
+            "count": vendor_counts[vendor],
+            "currency": vendor_currency.get(vendor, ""),
+        })
+
+    spend_timeline = [
+        {"date": d, "amount": round(amt, 2)}
+        for d, amt in sorted(spend_by_date.items())
+    ]
+
+    # Anomalies: invoices > median + 2σ for their vendor.
+    anomalies = []
+    for r in reports:
+        h = r.get("header") or {}
+        total_amt = _to_float_safe(h.get("total_amount"))
+        vendor = (h.get("vendor_id") or "").strip()
+        if not (vendor and total_amt):
+            continue
+        peers = invoice_totals_by_vendor.get(vendor, [])
+        if len(peers) < 3:
+            continue
+        m = median(peers)
+        try:
+            sigma = pstdev(peers)
+        except Exception:
+            sigma = 0.0
+        if sigma > 0 and total_amt > m + 2 * sigma:
+            anomalies.append({
+                "file": r.get("file_name", ""),
+                "vendor": vendor,
+                "amount": round(total_amt, 2),
+                "median": round(m, 2),
+                "reason": f"{total_amt:.2f} is >2σ above {vendor}'s median {m:.2f}",
+            })
+
+    # Other anomalies: future dates, unaccepted currency.
+    for r in reports:
+        h = r.get("header") or {}
+        if any(("future" in str(x).lower()) for x in (r.get("reasons") or [])):
+            anomalies.append({
+                "file": r.get("file_name", ""),
+                "vendor": (h.get("vendor_id") or "").strip(),
+                "amount": _to_float_safe(h.get("total_amount")),
+                "reason": "Future-dated invoice",
+            })
+
+    auto_rate = (auto_approved / total * 100.0) if total else 0.0
+    avg_conf = (sum(confidences) / len(confidences) * 100.0) if confidences else 0.0
+
+    return {
+        "kpis": {
+            "total_invoices": total,
+            "pending": pending_count,
+            "approved": approved_count,
+            "rejected": rejected_count,
+            "manual_review": manual_review,
+            "auto_approval_rate": round(auto_rate, 1),
+            "avg_translation_confidence": round(avg_conf, 1),
+            "total_line_items": line_item_count,
+            "spend_by_currency": {k: round(v, 2) for k, v in spend_by_currency.items()},
+        },
+        "status_distribution": [
+            {"status": k, "count": v} for k, v in status_counts.items()
+        ],
+        "top_vendors": top_vendors,
+        "spend_timeline": spend_timeline,
+        "discrepancy_reasons": [
+            {"reason": k, "count": v} for k, v in reason_counter.most_common()
+        ],
+        "anomalies": anomalies[:10],
+    }
+
+
 @app.get("/invoices")
 def list_invoices():
     items: list[dict] = []

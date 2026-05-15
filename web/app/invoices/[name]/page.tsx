@@ -99,30 +99,37 @@ export default function InvoiceDetailPage() {
       <div className="flex items-center justify-between">
         <Link
           href="/"
-          className="inline-flex items-center gap-1 text-sm text-stone-600 transition-colors hover:text-indigo-600"
+          className="inline-flex items-center gap-1 text-sm text-zinc-400 transition-colors hover:text-violet-300"
         >
           <Icon name="arrow-left" /> Back to dashboard
         </Link>
-        <span className="text-xs text-stone-400">Invoice report</span>
+        <span className="text-xs text-zinc-600">Invoice report</span>
       </div>
 
       <header className="card overflow-hidden">
-        <div className="flex flex-col gap-4 border-b border-stone-200 p-5 md:flex-row md:items-center md:justify-between">
+        <div className="flex flex-col gap-4 border-b border-[color:var(--border)] p-5 md:flex-row md:items-center md:justify-between">
           <div className="flex items-start gap-3">
-            <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-50 to-violet-50 text-indigo-600 ring-1 ring-inset ring-indigo-100">
+            <span
+              className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl text-violet-300"
+              style={{
+                background: "linear-gradient(135deg, rgba(167,139,250,0.18) 0%, rgba(34,211,238,0.10) 100%)",
+                border: "1px solid rgba(167,139,250,0.25)",
+                boxShadow: "0 0 24px -6px rgb(167 139 250 / 0.4)",
+              }}
+            >
               <Icon name="file" className="h-6 w-6" />
             </span>
             <div className="min-w-0">
-              <h1 className="break-all text-xl font-semibold tracking-tight">{name}</h1>
+              <h1 className="break-all text-xl font-semibold tracking-tight text-zinc-100">{name}</h1>
               <div className="mt-1.5 flex flex-wrap items-center gap-2">
                 <StatusPill kind={kind} />
                 {data.recommendation && (
-                  <span className="pill bg-stone-100 text-stone-600 ring-stone-200">
+                  <span className="pill bg-white/[0.04] text-zinc-300 ring-white/10">
                     Recommended: {data.recommendation}
                   </span>
                 )}
                 {discrepancies.length > 0 && (
-                  <span className="pill bg-amber-50 text-amber-700 ring-amber-200">
+                  <span className="pill bg-amber-500/10 text-amber-200 ring-amber-500/30">
                     <Icon name="alert" className="h-3 w-3" /> {discrepancies.length} issue
                     {discrepancies.length === 1 ? "" : "s"}
                   </span>
@@ -131,8 +138,8 @@ export default function InvoiceDetailPage() {
             </div>
           </div>
           <div className="text-right">
-            <div className="text-xs uppercase tracking-wider text-stone-500">Total</div>
-            <div className="mt-0.5 text-3xl font-semibold tabular-nums">
+            <div className="text-xs uppercase tracking-wider text-zinc-500">Total</div>
+            <div className="mt-0.5 bg-gradient-to-r from-white to-zinc-400 bg-clip-text text-3xl font-semibold tabular-nums text-transparent">
               {formatCurrency(header.total_amount, header.currency)}
             </div>
           </div>
@@ -148,14 +155,14 @@ export default function InvoiceDetailPage() {
       <InvoicePreviewButton name={name} />
 
       {discrepancies.length > 0 && (
-        <section className="card border-amber-200 bg-amber-50/30 p-5">
-          <h2 className="mb-3 flex items-center gap-2 text-base font-semibold text-amber-900">
+        <section className="card border-amber-500/30 p-5" style={{ background: "linear-gradient(135deg, rgba(251,191,36,0.06) 0%, rgba(251,191,36,0.02) 100%)" }}>
+          <h2 className="mb-3 flex items-center gap-2 text-base font-semibold text-amber-200">
             <Icon name="alert" className="h-4 w-4" /> Discrepancies
           </h2>
           <ul className="space-y-2">
             {discrepancies.map((s, i) => (
-              <li key={i} className="flex items-start gap-2 text-sm text-amber-900">
-                <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />
+              <li key={i} className="flex items-start gap-2 text-sm text-amber-100/90">
+                <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" />
                 <span>{s}</span>
               </li>
             ))}
@@ -164,32 +171,32 @@ export default function InvoiceDetailPage() {
       )}
 
       {discrepancies.length === 0 && (
-        <section className="card flex items-center gap-2 border-emerald-200 bg-emerald-50/30 p-4 text-sm text-emerald-800">
+        <section className="card flex items-center gap-2 border-emerald-500/30 p-4 text-sm text-emerald-200" style={{ background: "linear-gradient(135deg, rgba(52,211,153,0.06) 0%, rgba(52,211,153,0.02) 100%)" }}>
           <Icon name="check" className="h-4 w-4" />
           No discrepancies — all rule checks passed.
         </section>
       )}
 
       <section className="card overflow-hidden">
-        <div className="flex items-center justify-between border-b border-stone-200 px-5 py-3">
-          <h2 className="flex items-center gap-2 text-base font-semibold">
+        <div className="flex items-center justify-between border-b border-[color:var(--border)] px-5 py-3">
+          <h2 className="flex items-center gap-2 text-base font-semibold text-zinc-100">
             Line Items
-            <span className="rounded-full bg-stone-100 px-2 py-0.5 text-xs font-medium text-stone-600">
+            <span className="rounded-full bg-white/[0.06] px-2 py-0.5 text-xs font-medium text-zinc-300">
               {items.length}
             </span>
           </h2>
         </div>
         {items.length === 0 ? (
-          <p className="px-5 py-8 text-center text-sm text-stone-500">No line items.</p>
+          <p className="px-5 py-8 text-center text-sm text-zinc-500">No line items.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-stone-200 bg-stone-50/50 text-left">
+                <tr className="border-b border-[color:var(--border)] bg-white/[0.02] text-left">
                   {itemColumns.map((c) => (
                     <th
                       key={c}
-                      className="px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-stone-500"
+                      className="px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-zinc-500"
                     >
                       {c.replace(/_/g, " ")}
                     </th>
@@ -198,9 +205,9 @@ export default function InvoiceDetailPage() {
               </thead>
               <tbody>
                 {items.map((row, i) => (
-                  <tr key={i} className="border-b border-stone-100 last:border-0 hover:bg-stone-50/60">
+                  <tr key={i} className="border-b border-white/[0.04] last:border-0 transition-colors hover:bg-white/[0.03]">
                     {itemColumns.map((c) => (
-                      <td key={c} className="px-4 py-2.5 align-top text-stone-700 tabular-nums">
+                      <td key={c} className="px-4 py-2.5 align-top tabular-nums text-zinc-300">
                         {String(row[c] ?? "—")}
                       </td>
                     ))}
@@ -214,24 +221,24 @@ export default function InvoiceDetailPage() {
 
       {data.human_report && (
         <section className="card p-5">
-          <h2 className="mb-3 flex items-center gap-2 text-base font-semibold">
-            <Icon name="info" className="h-4 w-4 text-indigo-500" /> Agent Report
+          <h2 className="mb-3 flex items-center gap-2 text-base font-semibold text-zinc-100">
+            <Icon name="info" className="h-4 w-4 text-violet-300" /> Agent Report
           </h2>
-          <p className="whitespace-pre-wrap text-sm leading-relaxed text-stone-700">
+          <p className="whitespace-pre-wrap text-sm leading-relaxed text-zinc-300">
             {data.human_report}
           </p>
         </section>
       )}
 
       {needsReview && status !== "approved" && status !== "rejected" && (
-        <section className="card border-amber-200 bg-gradient-to-br from-amber-50 to-amber-50/30 p-5">
+        <section className="card border-amber-500/30 p-5" style={{ background: "linear-gradient(135deg, rgba(251,191,36,0.08) 0%, rgba(251,191,36,0.02) 100%)" }}>
           <div className="mb-3 flex items-center gap-2">
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-100 text-amber-700">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-500/15 text-amber-200 ring-1 ring-inset ring-amber-500/30">
               <Icon name="alert" className="h-4 w-4" />
             </span>
             <div>
-              <h2 className="text-base font-semibold text-amber-900">Human Review Required</h2>
-              <p className="text-xs text-amber-800/80">
+              <h2 className="text-base font-semibold text-amber-100">Human Review Required</h2>
+              <p className="text-xs text-amber-200/70">
                 The pipeline is paused awaiting your decision.
               </p>
             </div>
@@ -240,7 +247,7 @@ export default function InvoiceDetailPage() {
             value={remarks}
             onChange={(e) => setRemarks(e.target.value)}
             placeholder="Correction notes / remarks (optional)"
-            className="mb-3 h-24 w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm placeholder:text-amber-700/40 focus:outline-none focus:ring-2 focus:ring-amber-200"
+            className="mb-3 h-24 w-full rounded-lg border border-amber-500/30 bg-white/[0.03] px-3 py-2 text-sm text-amber-50 placeholder:text-amber-200/40 focus:border-amber-400/50 focus:outline-none focus:ring-2 focus:ring-amber-500/20"
           />
           <div className="flex flex-wrap gap-2">
             <button
@@ -292,16 +299,17 @@ function InvoicePreviewButton({ name }: { name: string }) {
       </button>
       {open && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-stone-900/70 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
           onClick={() => setOpen(false)}
         >
           <div
-            className="relative flex h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl"
+            className="relative flex h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-[color:var(--border)] bg-[color:var(--bg-card)] shadow-2xl"
             onClick={(e) => e.stopPropagation()}
+            style={{ boxShadow: "0 30px 80px -20px rgba(0,0,0,0.8), 0 0 60px -20px rgb(167 139 250 / 0.3)" }}
           >
-            <div className="flex items-center justify-between border-b border-stone-200 px-4 py-2.5">
-              <div className="flex items-center gap-2 text-sm font-medium truncate">
-                <Icon name="file" className="h-4 w-4 text-indigo-500" />
+            <div className="flex items-center justify-between border-b border-[color:var(--border)] px-4 py-2.5">
+              <div className="flex items-center gap-2 truncate text-sm font-medium text-zinc-100">
+                <Icon name="file" className="h-4 w-4 text-violet-300" />
                 <span className="truncate">{name}</span>
               </div>
               <div className="flex items-center gap-3">
@@ -309,20 +317,20 @@ function InvoicePreviewButton({ name }: { name: string }) {
                   href={url}
                   target="_blank"
                   rel="noreferrer"
-                  className="inline-flex items-center gap-1 text-xs text-stone-500 hover:text-indigo-600"
+                  className="inline-flex items-center gap-1 text-xs text-zinc-400 hover:text-violet-300"
                 >
                   <Icon name="external" className="h-3 w-3" /> Open in tab
                 </a>
                 <button
                   onClick={() => setOpen(false)}
-                  className="text-stone-500 hover:text-stone-900"
+                  className="text-zinc-400 hover:text-zinc-100"
                   aria-label="close"
                 >
                   <Icon name="x" />
                 </button>
               </div>
             </div>
-            <div className="flex-1 overflow-auto bg-stone-100">
+            <div className="flex-1 overflow-auto bg-black/40">
               {isImage ? (
                 <img
                   src={url}
@@ -343,8 +351,8 @@ function InvoicePreviewButton({ name }: { name: string }) {
 function Field({ label, value }: { label: string; value: any }) {
   return (
     <div className="min-w-0">
-      <div className="text-xs font-medium uppercase tracking-wider text-stone-500">{label}</div>
-      <div className="mt-1 truncate text-sm font-medium text-stone-900">{value ?? "—"}</div>
+      <div className="text-xs font-medium uppercase tracking-wider text-zinc-500">{label}</div>
+      <div className="mt-1 truncate text-sm font-medium text-zinc-100">{value ?? "—"}</div>
     </div>
   );
 }

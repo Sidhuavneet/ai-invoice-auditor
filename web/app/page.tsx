@@ -4,11 +4,14 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   InvoiceSummary,
+  StatsResponse,
+  getStats,
   listInvoices,
   processInbox,
   uploadFromUrl,
   uploadInvoice,
 } from "@/lib/api";
+import { AnalyticsView } from "./_components/Analytics";
 import {
   Icon,
   Spinner,
@@ -22,6 +25,7 @@ type Filter = "all" | "approved" | "rejected" | "review" | "pending";
 
 export default function DashboardPage() {
   const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
+  const [stats, setStats] = useState<StatsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -35,8 +39,9 @@ export default function DashboardPage() {
   async function refresh() {
     try {
       setError(null);
-      const data = await listInvoices();
+      const [data, s] = await Promise.all([listInvoices(), getStats().catch(() => null)]);
       setInvoices(data);
+      setStats(s);
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -138,7 +143,7 @@ export default function DashboardPage() {
     if (file) await handleFile(file);
   }
 
-  const stats = useMemo(() => {
+  const counts = useMemo(() => {
     const counts = { total: invoices.length, approved: 0, rejected: 0, review: 0, pending: 0 };
     let totalAmount = 0;
     for (const inv of invoices) {
@@ -172,11 +177,13 @@ export default function DashboardPage() {
     <div className="space-y-6">
       <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
-          <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-indigo-600">
+          <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-violet-300">
             <Icon name="sparkles" className="h-3.5 w-3.5" /> Dashboard
           </div>
-          <h1 className="mt-1 text-3xl font-semibold tracking-tight">Invoice Reports</h1>
-          <p className="mt-1 text-sm text-stone-600">
+          <h1 className="mt-1 bg-gradient-to-r from-white to-zinc-400 bg-clip-text text-3xl font-semibold tracking-tight text-transparent">
+            Invoice Reports
+          </h1>
+          <p className="mt-1 text-sm text-zinc-500">
             Drop invoices, run the multi-agent pipeline, and review extracted data.
           </p>
         </div>
@@ -195,21 +202,16 @@ export default function DashboardPage() {
               onChange={onUpload}
             />
           </label>
-          {(processing || stats.pending > 0) && (
+          {(processing || counts.pending > 0) && (
             <button onClick={onProcess} disabled={processing} className="btn-primary">
               {processing ? <Spinner /> : <Icon name="play" />}
-              {processing ? "Processing…" : `Re-scan Inbox (${stats.pending})`}
+              {processing ? "Processing…" : `Re-scan Inbox (${counts.pending})`}
             </button>
           )}
         </div>
       </header>
 
-      <section className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <StatCard label="Total Invoices" value={stats.total} icon="file" tint="indigo" />
-        <StatCard label="Approved" value={stats.approved} icon="check" tint="emerald" />
-        <StatCard label="Needs Review" value={stats.review} icon="alert" tint="amber" />
-        <StatCard label="Rejected" value={stats.rejected} icon="x" tint="rose" />
-      </section>
+      <AnalyticsView stats={stats} />
 
       {message && <Toast kind="success" onClose={() => setMessage(null)}>{message}</Toast>}
       {error && <Toast kind="error" onClose={() => setError(null)}>{error}</Toast>}
@@ -279,28 +281,39 @@ export default function DashboardPage() {
           }
         }}
         className={`card flex items-center justify-between gap-4 p-4 transition-all ${
-          dragOver ? "ring-2 ring-indigo-300" : ""
+          dragOver ? "ring-2 ring-violet-400/50" : ""
         }`}
+        style={
+          dragOver
+            ? { boxShadow: "0 0 30px -5px rgb(167 139 250 / 0.5)" }
+            : undefined
+        }
       >
         <div className="flex items-center gap-3">
-          <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-50 to-violet-50 text-indigo-600 ring-1 ring-inset ring-indigo-100">
+          <span
+            className="flex h-10 w-10 items-center justify-center rounded-lg text-white"
+            style={{
+              background: "linear-gradient(135deg, rgb(167,139,250,0.18) 0%, rgb(34,211,238,0.12) 100%)",
+              border: "1px solid rgba(167,139,250,0.25)",
+            }}
+          >
             <Icon name="upload" className="h-5 w-5" />
           </span>
           <div>
-            <div className="text-sm font-medium">Drag & drop invoices here</div>
-            <div className="text-xs text-stone-500">PDF, DOCX, PNG, JPG · or use the Upload button</div>
+            <div className="text-sm font-medium text-zinc-100">Drag & drop invoices here</div>
+            <div className="text-xs text-zinc-500">PDF, DOCX, PNG, JPG · or use the Upload button</div>
           </div>
         </div>
-        <span className="hidden text-xs text-stone-400 md:block">
+        <span className="hidden text-xs text-zinc-600 md:block">
           {dragOver ? "Release to upload…" : "Files land in inbox/"}
         </span>
       </section>
 
       <section className="card overflow-hidden">
-        <div className="flex flex-col gap-3 border-b border-stone-200 p-4 md:flex-row md:items-center md:justify-between">
+        <div className="flex flex-col gap-3 border-b border-[color:var(--border)] p-4 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-2">
             <div className="relative">
-              <Icon name="search" className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-stone-400" />
+              <Icon name="search" className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
@@ -316,20 +329,20 @@ export default function DashboardPage() {
                 onClick={() => setFilter(f)}
                 className={`rounded-full px-3 py-1 text-xs font-medium capitalize ring-1 ring-inset transition-colors ${
                   filter === f
-                    ? "bg-stone-900 text-white ring-stone-900"
-                    : "bg-white text-stone-600 ring-stone-200 hover:bg-stone-50"
+                    ? "bg-white text-zinc-900 ring-white"
+                    : "bg-white/[0.03] text-zinc-400 ring-white/10 hover:bg-white/[0.06] hover:text-zinc-200"
                 }`}
               >
                 {f}
                 {f !== "all" && (
                   <span className="ml-1 opacity-70">
                     {f === "approved"
-                      ? stats.approved
+                      ? counts.approved
                       : f === "review"
-                        ? stats.review
+                        ? counts.review
                         : f === "rejected"
-                          ? stats.rejected
-                          : stats.pending}
+                          ? counts.rejected
+                          : counts.pending}
                   </span>
                 )}
               </button>
@@ -352,7 +365,7 @@ export default function DashboardPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-stone-200 bg-stone-50/50 text-left">
+                <tr className="border-b border-[color:var(--border)] bg-white/[0.02] text-left">
                   <Th>File</Th>
                   <Th>Invoice #</Th>
                   <Th>Vendor</Th>
@@ -366,22 +379,22 @@ export default function DashboardPage() {
                 {filtered.map((inv, i) => (
                   <tr
                     key={inv.file}
-                    className="group animate-in border-b border-stone-100 last:border-0 hover:bg-stone-50/60"
+                    className="group animate-in border-b border-white/[0.04] last:border-0 transition-colors hover:bg-white/[0.03]"
                     style={{ animationDelay: `${i * 25}ms` }}
                   >
                     <td className="px-4 py-3">
                       <Link
                         href={`/invoices/${encodeURIComponent(inv.file)}`}
-                        className="flex items-center gap-2 font-medium text-stone-900 hover:text-indigo-600"
+                        className="flex items-center gap-2 font-medium text-zinc-100 transition-colors hover:text-violet-300"
                       >
-                        <Icon name="file" className="h-4 w-4 text-stone-400" />
+                        <Icon name="file" className="h-4 w-4 text-zinc-500" />
                         <span className="truncate">{inv.file}</span>
                       </Link>
                     </td>
-                    <td className="px-4 py-3 text-stone-700">{inv.invoice_no || "—"}</td>
-                    <td className="px-4 py-3 text-stone-700">{inv.vendor || "—"}</td>
-                    <td className="px-4 py-3 text-stone-500">{inv.invoice_date || "—"}</td>
-                    <td className="px-4 py-3 text-right font-medium tabular-nums text-stone-900">
+                    <td className="px-4 py-3 text-zinc-300">{inv.invoice_no || "—"}</td>
+                    <td className="px-4 py-3 text-zinc-300">{inv.vendor || "—"}</td>
+                    <td className="px-4 py-3 text-zinc-500">{inv.invoice_date || "—"}</td>
+                    <td className="px-4 py-3 text-right font-medium tabular-nums text-zinc-100">
                       {formatCurrency(inv.total, inv.currency)}
                     </td>
                     <td className="px-4 py-3">
@@ -390,7 +403,7 @@ export default function DashboardPage() {
                     <td className="px-4 py-3">
                       <Link
                         href={`/invoices/${encodeURIComponent(inv.file)}`}
-                        className="text-stone-400 transition-colors group-hover:text-indigo-600"
+                        className="text-zinc-500 transition-colors group-hover:text-violet-300"
                         aria-label="open"
                       >
                         <Icon name="arrow-right" />
@@ -409,41 +422,9 @@ export default function DashboardPage() {
 
 function Th({ children, className = "" }: { children?: React.ReactNode; className?: string }) {
   return (
-    <th className={`px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-stone-500 ${className}`}>
+    <th className={`px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-zinc-500 ${className}`}>
       {children}
     </th>
-  );
-}
-
-function StatCard({
-  label,
-  value,
-  icon,
-  tint,
-}: {
-  label: string;
-  value: number | string;
-  icon: any;
-  tint: "indigo" | "emerald" | "amber" | "rose";
-}) {
-  const tints: Record<string, string> = {
-    indigo: "from-indigo-50 to-indigo-100/40 text-indigo-600 ring-indigo-100",
-    emerald: "from-emerald-50 to-emerald-100/40 text-emerald-600 ring-emerald-100",
-    amber: "from-amber-50 to-amber-100/40 text-amber-600 ring-amber-100",
-    rose: "from-rose-50 to-rose-100/40 text-rose-600 ring-rose-100",
-  };
-  return (
-    <div className="card card-hover flex items-center gap-3 p-4">
-      <div
-        className={`flex h-10 w-10 items-center justify-center rounded-lg bg-gradient-to-br ring-1 ring-inset ${tints[tint]}`}
-      >
-        <Icon name={icon} className="h-5 w-5" />
-      </div>
-      <div>
-        <div className="text-xs font-medium uppercase tracking-wider text-stone-500">{label}</div>
-        <div className="mt-0.5 text-2xl font-semibold tabular-nums">{value}</div>
-      </div>
-    </div>
   );
 }
 
@@ -456,16 +437,23 @@ function EmptyState({
 }) {
   return (
     <div className="flex flex-col items-center justify-center gap-3 px-6 py-16 text-center">
-      <span className="flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-br from-indigo-50 to-violet-50 text-indigo-500 ring-1 ring-inset ring-indigo-100">
+      <span
+        className="flex h-14 w-14 items-center justify-center rounded-full text-violet-300"
+        style={{
+          background: "linear-gradient(135deg, rgba(167,139,250,0.18) 0%, rgba(34,211,238,0.10) 100%)",
+          border: "1px solid rgba(167,139,250,0.25)",
+          boxShadow: "0 0 30px -8px rgb(167 139 250 / 0.4)",
+        }}
+      >
         <Icon name="file" className="h-7 w-7" />
       </span>
-      <h3 className="text-base font-semibold">
+      <h3 className="text-base font-semibold text-zinc-100">
         {hasInvoices ? "No matches" : "No invoices yet"}
       </h3>
-      <p className="max-w-sm text-sm text-stone-500">
+      <p className="max-w-sm text-sm text-zinc-500">
         {hasInvoices
           ? "Try clearing filters or your search query."
-          : "Upload an invoice or drop one into the inbox/, then click Process to run the multi-agent pipeline."}
+          : "Upload an invoice or drop one into the inbox, then click Re-scan to run the multi-agent pipeline."}
       </p>
       {!hasInvoices && (
         <button onClick={onUploadClick} className="btn-primary mt-1">

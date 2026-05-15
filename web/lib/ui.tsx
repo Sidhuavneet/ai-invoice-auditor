@@ -166,27 +166,27 @@ export function classifyStatus(s: InvoiceSummary): StatusKind {
 export function StatusPill({ kind, label }: { kind: StatusKind; label?: string }) {
   const config: Record<StatusKind, { cls: string; icon: any; text: string }> = {
     approved: {
-      cls: "bg-emerald-50 text-emerald-700 ring-emerald-200",
+      cls: "bg-emerald-500/10 text-emerald-300 ring-emerald-500/30",
       icon: "check",
       text: "Approved",
     },
     rejected: {
-      cls: "bg-rose-50 text-rose-700 ring-rose-200",
+      cls: "bg-rose-500/10 text-rose-300 ring-rose-500/30",
       icon: "x",
       text: "Rejected",
     },
     review: {
-      cls: "bg-amber-50 text-amber-800 ring-amber-200",
+      cls: "bg-amber-500/10 text-amber-200 ring-amber-500/30",
       icon: "alert",
       text: "Needs Review",
     },
     pending: {
-      cls: "bg-stone-100 text-stone-600 ring-stone-200",
+      cls: "bg-white/[0.04] text-zinc-400 ring-white/10",
       icon: "clock",
       text: "Pending",
     },
     neutral: {
-      cls: "bg-stone-100 text-stone-700 ring-stone-200",
+      cls: "bg-white/[0.04] text-zinc-300 ring-white/10",
       icon: "info",
       text: "—",
     },
@@ -210,9 +210,9 @@ export function Toast({
   onClose?: () => void;
 }) {
   const palette = {
-    info: "bg-indigo-50 text-indigo-900 ring-indigo-200",
-    error: "bg-rose-50 text-rose-900 ring-rose-200",
-    success: "bg-emerald-50 text-emerald-900 ring-emerald-200",
+    info: "bg-violet-500/10 text-violet-200 ring-violet-500/30",
+    error: "bg-rose-500/10 text-rose-200 ring-rose-500/30",
+    success: "bg-emerald-500/10 text-emerald-200 ring-emerald-500/30",
   }[kind];
   const iconName = kind === "error" ? "alert" : kind === "success" ? "check" : "info";
   return (

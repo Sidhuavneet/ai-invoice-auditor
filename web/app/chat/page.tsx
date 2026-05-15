@@ -98,12 +98,14 @@ export default function ChatPage() {
   return (
     <div className="flex h-[calc(100vh-3rem)] flex-col gap-4">
       <header>
-        <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-indigo-600">
+        <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-violet-300">
           <Icon name="sparkles" className="h-3.5 w-3.5" /> RAG Chatbot
         </div>
-        <h1 className="mt-1 text-3xl font-semibold tracking-tight">QA Chat</h1>
-        <p className="mt-1 text-sm text-stone-600">
-          Ask questions about processed invoices. Powered by FAISS + Llama 3.3 over your vector index.
+        <h1 className="mt-1 bg-gradient-to-r from-white to-zinc-400 bg-clip-text text-3xl font-semibold tracking-tight text-transparent">
+          QA Chat
+        </h1>
+        <p className="mt-1 text-sm text-zinc-500">
+          Ask questions about processed invoices. Powered by ChromaDB + Llama 3.3 over your vector index.
         </p>
       </header>
 
@@ -111,13 +113,19 @@ export default function ChatPage() {
         <div ref={scrollRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
           {messages.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-4 text-center">
-              <span className="flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-sm">
+              <span
+                className="flex h-14 w-14 items-center justify-center rounded-full text-white"
+                style={{
+                  background: "linear-gradient(135deg, rgb(167,139,250) 0%, rgb(34,211,238) 100%)",
+                  boxShadow: "0 0 40px -6px rgb(167 139 250 / 0.6)",
+                }}
+              >
                 <Icon name="sparkles" className="h-7 w-7" />
               </span>
               <div>
-                <h3 className="text-base font-semibold">Ask anything about your invoices</h3>
-                <p className="mt-1 text-sm text-stone-500">
-                  Responses are grounded in the FAISS index of processed reports.
+                <h3 className="text-base font-semibold text-zinc-100">Ask anything about your invoices</h3>
+                <p className="mt-1 text-sm text-zinc-500">
+                  Responses are grounded in the ChromaDB index of processed reports.
                 </p>
               </div>
               <div className="mt-2 grid w-full max-w-2xl grid-cols-1 gap-2 md:grid-cols-2">
@@ -125,9 +133,9 @@ export default function ChatPage() {
                   <button
                     key={s}
                     onClick={() => send(s)}
-                    className="card card-hover flex items-center gap-2 p-3 text-left text-sm text-stone-700"
+                    className="card card-hover flex items-center gap-2 p-3 text-left text-sm text-zinc-300"
                   >
-                    <Icon name="search" className="h-4 w-4 shrink-0 text-indigo-500" />
+                    <Icon name="search" className="h-4 w-4 shrink-0 text-violet-300" />
                     <span>{s}</span>
                   </button>
                 ))}
@@ -137,8 +145,14 @@ export default function ChatPage() {
             messages.map((m, i) => <MessageBubble key={i} message={m} />)
           )}
           {loading && (
-            <div className="animate-in flex items-center gap-2 text-sm text-stone-500">
-              <span className="flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 text-white">
+            <div className="animate-in flex items-center gap-2 text-sm text-zinc-500">
+              <span
+                className="flex h-7 w-7 items-center justify-center rounded-full text-white"
+                style={{
+                  background: "linear-gradient(135deg, rgb(167,139,250) 0%, rgb(34,211,238) 100%)",
+                  boxShadow: "0 0 16px -4px rgb(167 139 250 / 0.6)",
+                }}
+              >
                 <Icon name="sparkles" className="h-3.5 w-3.5" />
               </span>
               <Dots />
@@ -147,12 +161,12 @@ export default function ChatPage() {
         </div>
 
         {error && (
-          <div className="border-t border-stone-200 p-3">
+          <div className="border-t border-[color:var(--border)] p-3">
             <Toast kind="error" onClose={() => setError(null)}>{error}</Toast>
           </div>
         )}
 
-        <div className="border-t border-stone-200 bg-stone-50/50 p-3">
+        <div className="border-t border-[color:var(--border)] bg-white/[0.02] p-3">
           <div className="flex items-end gap-2">
             <textarea
               value={input}
@@ -176,7 +190,7 @@ export default function ChatPage() {
               <span className="hidden sm:inline">Send</span>
             </button>
           </div>
-          <p className="mt-1.5 px-1 text-[11px] text-stone-400">
+          <p className="mt-1.5 px-1 text-[11px] text-zinc-600">
             Press Enter to send · Shift+Enter for newline
           </p>
         </div>
@@ -190,11 +204,15 @@ function MessageBubble({ message }: { message: Message }) {
   return (
     <div className={`animate-in flex gap-3 ${isUser ? "flex-row-reverse" : ""}`}>
       <span
-        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-white shadow-sm ${
+        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-white"
+        style={
           isUser
-            ? "bg-stone-900"
-            : "bg-gradient-to-br from-indigo-500 to-violet-600"
-        }`}
+            ? { background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.15)" }
+            : {
+                background: "linear-gradient(135deg, rgb(167,139,250) 0%, rgb(34,211,238) 100%)",
+                boxShadow: "0 0 16px -4px rgb(167 139 250 / 0.6)",
+              }
+        }
       >
         <Icon name={isUser ? "home" : "sparkles"} className="h-3.5 w-3.5" />
       </span>
@@ -202,8 +220,8 @@ function MessageBubble({ message }: { message: Message }) {
         <div
           className={`rounded-2xl px-4 py-2.5 text-sm ${
             isUser
-              ? "rounded-tr-sm bg-stone-900 text-white"
-              : "rounded-tl-sm border border-stone-200 bg-white text-stone-900"
+              ? "rounded-tr-sm bg-white/[0.08] text-zinc-100 ring-1 ring-inset ring-white/10"
+              : "rounded-tl-sm border border-[color:var(--border)] bg-[color:var(--bg-card)]/80 text-zinc-100 backdrop-blur-md"
           }`}
         >
           {isUser ? (
@@ -215,11 +233,11 @@ function MessageBubble({ message }: { message: Message }) {
           )}
         </div>
         {message.reviewed && Object.keys(message.reviewed).length > 0 && (
-          <details className="ml-1 text-xs text-stone-500">
-            <summary className="cursor-pointer hover:text-stone-700">
+          <details className="ml-1 text-xs text-zinc-500">
+            <summary className="cursor-pointer hover:text-zinc-300">
               <Icon name="info" className="mr-1 inline h-3 w-3" /> Answer relevancy
             </summary>
-            <pre className="mt-1.5 max-w-md overflow-x-auto rounded-md border border-stone-200 bg-stone-50 p-2 text-[11px]">
+            <pre className="mt-1.5 max-w-md overflow-x-auto rounded-md border border-[color:var(--border)] bg-white/[0.03] p-2 text-[11px] text-zinc-300">
               {JSON.stringify(message.reviewed, null, 2)}
             </pre>
           </details>
@@ -235,8 +253,8 @@ function Dots() {
       {[0, 1, 2].map((i) => (
         <span
           key={i}
-          className="h-1.5 w-1.5 animate-bounce rounded-full bg-stone-400"
-          style={{ animationDelay: `${i * 120}ms` }}
+          className="h-1.5 w-1.5 animate-bounce rounded-full bg-violet-400"
+          style={{ animationDelay: `${i * 120}ms`, boxShadow: "0 0 8px rgb(167 139 250 / 0.6)" }}
         />
       ))}
     </span>

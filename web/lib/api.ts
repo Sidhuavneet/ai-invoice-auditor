@@ -20,6 +20,30 @@ async function handle<T>(res: Response): Promise<T> {
   return res.json();
 }
 
+export type StatsResponse = {
+  kpis: {
+    total_invoices: number;
+    pending: number;
+    approved: number;
+    rejected: number;
+    manual_review: number;
+    auto_approval_rate: number;
+    avg_translation_confidence: number;
+    total_line_items: number;
+    spend_by_currency: Record<string, number>;
+  };
+  status_distribution: { status: string; count: number }[];
+  top_vendors: { vendor: string; spend: number; count: number; currency: string }[];
+  spend_timeline: { date: string; amount: number }[];
+  discrepancy_reasons: { reason: string; count: number }[];
+  anomalies: { file: string; vendor: string; amount: number; reason: string; median?: number }[];
+};
+
+export async function getStats(): Promise<StatsResponse> {
+  const res = await fetch(`${API_URL}/stats`, { cache: "no-store" });
+  return handle(res);
+}
+
 export async function listInvoices(): Promise<InvoiceSummary[]> {
   const res = await fetch(`${API_URL}/invoices`, { cache: "no-store" });
   return handle(res);
