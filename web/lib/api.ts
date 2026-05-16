@@ -67,6 +67,70 @@ export async function processInbox(): Promise<{
   return handle(res);
 }
 
+export type PipelineEvent =
+  | { type: "file_start"; file: string }
+  | { type: "node"; file: string; node: string; label: string; status: "running" | "done" }
+  | { type: "paused"; file: string }
+  | { type: "file_done"; file: string; status: string; error?: string }
+  | {
+      type: "summary";
+      processed: number;
+      errors: string[];
+      indexed?: number;
+      truncated?: boolean;
+    }
+  | { type: "done" }
+  | { type: "error"; message: string };
+
+/** Stream-process the inbox. Emits per-node + per-file events so the UI can
+ * render a live agent pipeline. Returns a final summary on resolve. */
+export async function processInboxStream(
+  onEvent: (e: PipelineEvent) => void,
+  signal?: AbortSignal,
+): Promise<{
+  processed: number;
+  errors: string[];
+  indexed?: number;
+  truncated?: boolean;
+}> {
+  const res = await fetch(`${API_URL}/process/stream`, {
+    method: "POST",
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `Stream failed: ${res.status}`);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let summary = { processed: 0, errors: [] as string[] };
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split("\n\n");
+    buffer = events.pop() ?? "";
+    for (const evt of events) {
+      let event = "message";
+      let data = "";
+      for (const line of evt.split("\n")) {
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        else if (line.startsWith("data:")) data += line.slice(5).trim();
+      }
+      if (!event) continue;
+      try {
+        const parsed = data ? JSON.parse(data) : {};
+        if (event === "summary") summary = { ...summary, ...parsed };
+        onEvent({ type: event as any, ...parsed });
+      } catch {
+        /* ignore malformed event */
+      }
+    }
+  }
+  return summary;
+}
+
 export function invoiceFileUrl(name: string): string {
   return `${API_URL}/invoices/${encodeURIComponent(name)}/file`;
 }

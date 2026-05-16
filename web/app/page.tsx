@@ -7,11 +7,12 @@ import {
   StatsResponse,
   getStats,
   listInvoices,
-  processInbox,
+  processInboxStream,
   uploadFromUrl,
   uploadInvoice,
 } from "@/lib/api";
 import { AnalyticsView } from "./_components/Analytics";
+import { FileState, LivePipeline } from "./_components/LivePipeline";
 import {
   Icon,
   Spinner,
@@ -27,6 +28,7 @@ export default function DashboardPage() {
   const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [pipelineFiles, setPipelineFiles] = useState<FileState[]>([]);
   const [processing, setProcessing] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -69,17 +71,55 @@ export default function DashboardPage() {
     setProcessing(true);
     setMessage(null);
     setError(null);
+    setPipelineFiles([]);
     try {
-      const res = await processInbox();
+      const res = await processInboxStream((e) => {
+        if (e.type === "file_start") {
+          setPipelineFiles((p) => {
+            if (p.some((x) => x.file === e.file)) return p;
+            return [
+              ...p,
+              { file: e.file, doneNodes: new Set<string>(), status: "running" },
+            ];
+          });
+        } else if (e.type === "node") {
+          setPipelineFiles((p) =>
+            p.map((x) =>
+              x.file === e.file
+                ? { ...x, doneNodes: new Set([...x.doneNodes, e.node]) }
+                : x,
+            ),
+          );
+        } else if (e.type === "paused") {
+          setPipelineFiles((p) =>
+            p.map((x) => (x.file === e.file ? { ...x, status: "paused" } : x)),
+          );
+        } else if (e.type === "file_done") {
+          setPipelineFiles((p) =>
+            p.map((x) =>
+              x.file === e.file
+                ? {
+                    ...x,
+                    status: e.status === "error" ? "error" : "done",
+                    finalStatus: e.status,
+                    error: e.error,
+                  }
+                : x,
+            ),
+          );
+        }
+      });
       const base = res.processed
         ? `Processed ${res.processed} invoice${res.processed === 1 ? "" : "s"}.`
         : "No new invoices in inbox.";
       const truncMsg = res.truncated
-        ? ` Stopped at ${res.max_iters ?? "the"} per-request cap — click Process again to continue.`
+        ? " Stopped at the per-request cap — click again to continue."
         : "";
       setMessage(base + truncMsg);
       if (res.errors?.length) setError(res.errors.join("\n"));
       await refresh();
+      // Clear the live pipeline after a short pause so the user sees the final state.
+      setTimeout(() => setPipelineFiles([]), 4000);
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -92,16 +132,9 @@ export default function DashboardPage() {
     setError(null);
     try {
       const up = await uploadFromUrl(url);
-      setMessage(`Fetched ${up.filename} from URL. Running pipeline…`);
-      setProcessing(true);
-      const res = await processInbox();
-      setMessage(
-        res.processed
-          ? `Processed ${res.processed} invoice${res.processed === 1 ? "" : "s"}. Chat is up to date.`
-          : `Fetched ${up.filename}.`,
-      );
-      if (res.errors?.length) setError(res.errors.join("\n"));
-      await refresh();
+      setMessage(`Fetched ${up.filename}. Running pipeline…`);
+      // Delegate to onProcess so the user sees the live pipeline UI.
+      await onProcess();
     } catch (err: any) {
       const detail = (err.message || "").includes("403") || (err.message || "").includes("hotlink")
         ? `${err.message}\n\nQuick fix: open ${url.length > 60 ? url.slice(0, 60) + "…" : url} in a new tab → right-click → "Save image as…" → drag the saved file onto this zone.`
@@ -110,7 +143,6 @@ export default function DashboardPage() {
       throw err;
     } finally {
       setUploading(false);
-      setProcessing(false);
     }
   }
 
@@ -119,21 +151,12 @@ export default function DashboardPage() {
     setError(null);
     try {
       await uploadInvoice(file);
-      setMessage(`Uploaded ${file.name}. Running the pipeline…`);
-      setProcessing(true);
-      const res = await processInbox();
-      setMessage(
-        res.processed
-          ? `Processed ${res.processed} invoice${res.processed === 1 ? "" : "s"}. Chat is up to date.`
-          : `Uploaded ${file.name}. (No new files were picked up — already processed?)`,
-      );
-      if (res.errors?.length) setError(res.errors.join("\n"));
-      await refresh();
+      setMessage(`Uploaded ${file.name}. Running pipeline…`);
+      await onProcess();
     } catch (err: any) {
       setError(err.message);
     } finally {
       setUploading(false);
-      setProcessing(false);
       if (fileRef.current) fileRef.current.value = "";
     }
   }
@@ -210,6 +233,8 @@ export default function DashboardPage() {
           )}
         </div>
       </header>
+
+      {pipelineFiles.length > 0 && <LivePipeline files={pipelineFiles} />}
 
       <AnalyticsView stats={stats} />
 

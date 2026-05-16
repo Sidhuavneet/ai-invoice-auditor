@@ -575,6 +575,130 @@ def process_inbox():
     }
 
 
+# Human-readable labels for each LangGraph node, surfaced live in the UI.
+NODE_LABELS = {
+    "extractor": "Extracting",
+    "translate": "Translating",
+    "validation": "Validating",
+    "reporting": "Auditing",
+    "human": "Awaiting review",
+    "final": "Saving",
+}
+
+
+@app.post("/process/stream")
+def process_inbox_stream():
+    """SSE variant of /process. Streams per-node + per-file events so the UI
+    can render a live agent pipeline visualization (extractor → translate →
+    validation → reporting → final). Uses LangGraph's stream() instead of
+    invoke() so we observe each node as it completes.
+
+    Events emitted (each line: `event: <name>\\ndata: <json>\\n\\n`):
+      - file_start  : {file}
+      - node        : {file, node, label, status: "running"|"done"}
+      - file_done   : {file, status, error?}
+      - paused      : {file}                — graph hit HITL interrupt
+      - summary     : {processed, errors, indexed, truncated}
+      - done        : {}
+    """
+    def event_stream():
+        target = "inbox"
+        processed = 0
+        errors: list[str] = []
+        failed: list[str] = []
+        seen: set[str] = set()
+        MAX_ITERS = int(os.environ.get("MAX_PROCESS_ITERS", "50"))
+        iters = 0
+        truncated = False
+
+        def evt(name: str, payload: dict) -> str:
+            return f"event: {name}\ndata: {json.dumps(payload)}\n\n"
+
+        while iters < MAX_ITERS:
+            iters += 1
+            paths = mailbox_utils.poll(target)
+            if not paths or not paths.get("file"):
+                break
+            fname = paths["file"]
+            if fname in seen:
+                break
+            seen.add(fname)
+            file_path = f"{target}/{fname}"
+            metadata_path = f"{target}/{paths['meta']}" if paths["meta"] else ""
+            file_name = fname[: fname.rfind(".")]
+            err_path = ERRORS_DIR / f"{file_name}.json"
+
+            yield evt("file_start", {"file": fname})
+
+            try:
+                if err_path.exists():
+                    err_path.unlink()
+                final_state: dict = {}
+                # stream() yields {node_name: state_update} after each node.
+                for step in graph_app.stream(
+                    {
+                        "file_path": file_path,
+                        "metadata_path": metadata_path,
+                        "file_name": file_name,
+                    },
+                    config={"configurable": {"thread_id": file_name}},
+                ):
+                    for node_name, state_update in (step or {}).items():
+                        # LangGraph emits a magic "__interrupt__" sentinel when
+                        # a node calls interrupt() for HITL.
+                        if node_name == "__interrupt__":
+                            yield evt("paused", {"file": fname})
+                            continue
+                        yield evt("node", {
+                            "file": fname,
+                            "node": node_name,
+                            "label": NODE_LABELS.get(node_name, node_name),
+                            "status": "done",
+                        })
+                        if isinstance(state_update, dict):
+                            final_state.update(state_update)
+
+                processed += 1
+                status = _canon_status(final_state.get("status"))
+                if status in FINAL_STATUSES:
+                    _move_to_processed(file_name)
+                yield evt("file_done", {"file": fname, "status": status or "manual_review"})
+            except Exception as e:
+                msg = f"{type(e).__name__}: {e}"
+                errors.append(f"{fname}: {msg}")
+                failed.append(fname)
+                try:
+                    err_path.write_text(json.dumps({"file": fname, "error": msg}), encoding="utf-8")
+                except Exception:
+                    pass
+                yield evt("file_done", {"file": fname, "status": "error", "error": msg})
+
+        # Truncation probe — same logic as /process.
+        try:
+            nxt = mailbox_utils.poll(target)
+            if nxt and nxt.get("file"):
+                truncated = True
+                mailbox_utils.unmark(nxt["file"])
+        except Exception:
+            pass
+        for fname in failed:
+            try:
+                mailbox_utils.unmark(fname)
+            except Exception:
+                pass
+
+        indexed = _refresh_index_from_reports()
+        yield evt("summary", {
+            "processed": processed,
+            "errors": errors,
+            "indexed": indexed,
+            "truncated": truncated,
+        })
+        yield evt("done", {})
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
 # ---------- Chroma index (single writer, per-report vector IDs) ----------
 
 MANIFEST_PATH = DOC_DB_DIR / "manifest.json"
