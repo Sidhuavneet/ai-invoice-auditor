@@ -998,46 +998,364 @@ def chat(body: ChatBody):
     }
 
 
-@app.post("/chat/stream")
-def chat_stream(body: ChatBody):
+# ---------- Chat tools (generative-UI registry) -------------------------
+#
+# Each tool returns a (kind, payload) tuple. `kind` is a string the frontend
+# maps to a React renderer (InvoiceCard, VendorCard, StatsTable, ...). The
+# LLM picks tools based on natural-language queries; we execute them, emit a
+# `tool_result` SSE event with the payload, then ask the LLM to synthesize a
+# short narrative around those results.
+
+
+def _load_all_reports() -> list[dict]:
+    out = []
+    if REPORTS_DIR.exists():
+        for f in sorted(os.listdir(REPORTS_DIR)):
+            if f.startswith("RE_") and f.endswith(".json"):
+                try:
+                    out.append(json.loads((REPORTS_DIR / f).read_text(encoding="utf-8")))
+                except Exception:
+                    continue
+    return out
+
+
+def _summarize_invoice_for_card(data: dict) -> dict:
+    h = data.get("header") or {}
+    return {
+        "file_name": data.get("file_name", ""),
+        "invoice_no": h.get("invoice_no", ""),
+        "invoice_date": h.get("invoice_date", ""),
+        "vendor": h.get("vendor_id", ""),
+        "currency": h.get("currency", ""),
+        "total": h.get("total_amount", ""),
+        "status": _canon_status(data.get("status")),
+        "recommendation": _canon_recommendation(data.get("recommendation")),
+        "reasons": data.get("reasons") or [],
+        "line_item_count": len(data.get("line_item") or []),
+    }
+
+
+def tool_get_invoice(file_name: str) -> dict:
+    """Fetch a single invoice report for inline card rendering."""
+    if not file_name:
+        return {"kind": "error", "payload": {"message": "file_name required"}}
+    stem = file_name
+    if stem.endswith(".json") and stem.startswith("RE_"):
+        stem = stem[3:-5]
+    if "." in stem:
+        stem = stem[: stem.rfind(".")]
+    target = REPORTS_DIR / f"RE_{stem}.json"
+    if not target.exists():
+        # Fuzzy match — invoice_no or partial filename.
+        for r in _load_all_reports():
+            h = r.get("header") or {}
+            if (
+                r.get("file_name", "") == stem
+                or h.get("invoice_no", "") == file_name
+                or stem.lower() in r.get("file_name", "").lower()
+            ):
+                return {"kind": "invoice", "payload": _summarize_invoice_for_card(r)}
+        return {"kind": "error", "payload": {"message": f"No invoice matching '{file_name}'"}}
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+    except Exception:
+        return {"kind": "error", "payload": {"message": "Failed to read report"}}
+    return {"kind": "invoice", "payload": _summarize_invoice_for_card(data)}
+
+
+def tool_get_vendor_stats(vendor: str) -> dict:
+    """Aggregate stats for one vendor: spend, count, status mix, recent invoices."""
+    if not vendor:
+        return {"kind": "error", "payload": {"message": "vendor required"}}
+    target = vendor.strip().lower()
+    matching = []
+    for r in _load_all_reports():
+        v = ((r.get("header") or {}).get("vendor_id") or "").strip().lower()
+        if v == target or target in v:
+            matching.append(r)
+    if not matching:
+        return {"kind": "error", "payload": {"message": f"No invoices for vendor '{vendor}'"}}
+
+    from collections import Counter
+    total_spend = 0.0
+    currency = ""
+    status_mix: Counter = Counter()
+    invoices_brief = []
+    for r in matching:
+        h = r.get("header") or {}
+        amt = _to_float_safe(h.get("total_amount"))
+        total_spend += amt
+        currency = currency or (h.get("currency") or "")
+        status_mix[_canon_status(r.get("status")) or "unknown"] += 1
+        invoices_brief.append(_summarize_invoice_for_card(r))
+    return {
+        "kind": "vendor",
+        "payload": {
+            "vendor": matching[0].get("header", {}).get("vendor_id", vendor),
+            "total_spend": round(total_spend, 2),
+            "currency": currency,
+            "invoice_count": len(matching),
+            "status_mix": dict(status_mix),
+            "invoices": invoices_brief[:5],
+        },
+    }
+
+
+def tool_list_flagged() -> dict:
+    """All invoices currently in manual_review or rejected — as a card list."""
+    flagged = []
+    for r in _load_all_reports():
+        st = _canon_status(r.get("status"))
+        if st in {"manual_review", "rejected"}:
+            flagged.append(_summarize_invoice_for_card(r))
+    return {"kind": "invoice_list", "payload": {"title": "Flagged invoices", "items": flagged}}
+
+
+def tool_get_overall_stats() -> dict:
+    """KPI summary card across all reports."""
+    return {"kind": "overall_stats", "payload": stats()}
+
+
+def tool_search_invoices(query: str, k: int = 5) -> dict:
+    """Semantic search across the invoice corpus, returns top-k hits as cards."""
     db = _load_db()
     if db is None:
+        return {"kind": "error", "payload": {"message": "No invoices indexed yet."}}
+    docs = db.similarity_search(query or "", k=k)
+    seen: set[str] = set()
+    items: list[dict] = []
+    by_name = {r.get("file_name", ""): r for r in _load_all_reports()}
+    for d in docs:
+        fn = (d.metadata or {}).get("file_name", "")
+        if not fn or fn in seen:
+            continue
+        seen.add(fn)
+        if fn in by_name:
+            items.append(_summarize_invoice_for_card(by_name[fn]))
+    return {"kind": "invoice_list", "payload": {"title": "Search results", "items": items}}
+
+
+# Tool registry surfaced to the LLM. Each entry: spec for the LLM + the Python
+# callable. Keeping it inline so the spec and impl stay in sync.
+CHAT_TOOLS = {
+    "get_invoice": {
+        "spec": {
+            "type": "function",
+            "function": {
+                "name": "get_invoice",
+                "description": "Get a specific invoice by file name or invoice number. Returns a structured invoice card.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_name": {
+                            "type": "string",
+                            "description": "The invoice file name (e.g. INV_EN_001) or invoice number.",
+                        },
+                    },
+                    "required": ["file_name"],
+                },
+            },
+        },
+        "fn": tool_get_invoice,
+    },
+    "get_vendor_stats": {
+        "spec": {
+            "type": "function",
+            "function": {
+                "name": "get_vendor_stats",
+                "description": "Aggregate spend, invoice count, and status breakdown for a single vendor.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"vendor": {"type": "string"}},
+                    "required": ["vendor"],
+                },
+            },
+        },
+        "fn": tool_get_vendor_stats,
+    },
+    "list_flagged": {
+        "spec": {
+            "type": "function",
+            "function": {
+                "name": "list_flagged",
+                "description": "List all invoices currently flagged for manual review or rejected.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        "fn": lambda **_: tool_list_flagged(),
+    },
+    "get_overall_stats": {
+        "spec": {
+            "type": "function",
+            "function": {
+                "name": "get_overall_stats",
+                "description": "Get the dashboard KPIs and top vendors / discrepancies / anomalies across all invoices.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        "fn": lambda **_: tool_get_overall_stats(),
+    },
+    "search_invoices": {
+        "spec": {
+            "type": "function",
+            "function": {
+                "name": "search_invoices",
+                "description": "Semantic-search the invoice corpus by free-text. Use for vague queries like 'logistics from Germany'.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "k": {"type": "integer", "default": 5},
+                    },
+                    "required": ["query"],
+                },
+            },
+        },
+        "fn": tool_search_invoices,
+    },
+}
+
+
+def _suggest_followups(query: str, kinds: list[str]) -> list[str]:
+    """Pick 3 short follow-up prompts based on what tools were used.
+
+    Deterministic to keep the loop tight; an LLM-generated version can replace
+    this later without changing the contract.
+    """
+    # Follow-ups should be concrete questions the tool registry can answer
+    # cleanly — vague prompts ("show the riskiest vendors") tempt the model
+    # into malformed tool calls. Use answerable, specific phrasings.
+    out: list[str] = []
+    q = query.lower()
+    if "invoice" in " ".join(kinds) or "invoice" in q:
+        out.append("List all flagged invoices")
+        out.append("What is the overall spend summary?")
+    if "vendor" in " ".join(kinds):
+        out.append("What is the overall spend summary?")
+        out.append("List all flagged invoices")
+    if "overall_stats" in kinds or "list" in " ".join(kinds):
+        out.append("Which invoices are flagged for manual review?")
+        out.append("List all anomalies")
+    if not out:
+        out = [
+            "Show the overall spend summary",
+            "List flagged invoices",
+            "What are the top vendors by spend?",
+        ]
+    # De-dup while preserving order.
+    seen = set()
+    deduped = [x for x in out if not (x in seen or seen.add(x))]
+    return deduped[:3]
+
+
+@app.post("/chat/stream")
+def chat_stream(body: ChatBody):
+    """Generative-UI chat: LLM picks tools, backend executes, frontend renders.
+
+    Event taxonomy (each line: `event: <name>\\ndata: <json>\\n\\n`):
+      - tool_call    : {name, args}            — LLM decided to call a tool
+      - tool_result  : {name, kind, payload}   — backend executed the tool
+      - token        : "..."                   — synthesis answer token
+      - followups    : ["...", "...", "..."]   — suggested next prompts
+      - done         : {reviewed_response}
+      - error        : "..."
+    """
+    db = _load_db()
+    if db is None and not _load_all_reports():
         raise HTTPException(400, "No invoices indexed yet. Process invoices first.")
 
-    content = _retrieve_context(body.query, db)
-
-    prompt = f"""
-You are a helpful invoice chat assistant. Answer the query using only the
-provided content. Use proper markdown — headings, bold, bullet lists, and
-tables when listing multiple invoices. Do not invent fields that aren't in the
-content.
-
-If the query is unrelated to invoices, reply exactly:
-"I am an invoice helper assistant. Please ask invoice-related questions."
-
-## query
-{body.query}
-
-## content
-{content}
-"""
+    tool_specs = [t["spec"] for t in CHAT_TOOLS.values()]
 
     def event_stream():
-        full = []
         try:
-            for chunk in llm.stream(prompt):
+            # Phase 1 — let the LLM choose tools (non-streaming routing turn).
+            # Llama 3.3 on Groq occasionally emits malformed tool-call JSON
+            # ("tool_use_failed"). When that happens, fall back to a plain
+            # corpus-context answer rather than crashing the whole stream.
+            planner_prompt = (
+                "You are an invoice analytics assistant. Decide which tools to call "
+                "to best answer the user's query. ONLY call a tool when you have all "
+                "required arguments — never invent a vendor name or file name that "
+                "the user didn't mention. For aggregate questions ('top vendors', "
+                "'riskiest', 'overall', 'how many') call get_overall_stats. For "
+                "specific vendors call get_vendor_stats with the exact name the user "
+                "wrote. For specific invoices call get_invoice. You may call 0-3 tools.\n\n"
+                f"User query: {body.query}"
+            )
+            llm_with_tools = llm.bind_tools(tool_specs)
+            tool_calls: list = []
+            try:
+                ai_msg = llm_with_tools.invoke(planner_prompt)
+                tool_calls = getattr(ai_msg, "tool_calls", None) or []
+            except Exception as e:
+                # Groq tool-call parser failed. Continue without tools; the
+                # synthesis step will fall back to corpus retrieval.
+                err = str(e)
+                if "tool_use_failed" in err or "Failed to call a function" in err:
+                    print(f"[chat] tool-routing fallback: {err[:120]}")
+                else:
+                    raise
+
+            tool_results: list[dict] = []
+            used_kinds: list[str] = []
+            for tc in tool_calls[:3]:  # cap to keep things sane
+                name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", "")
+                args = tc.get("args") if isinstance(tc, dict) else getattr(tc, "args", {}) or {}
+                if name not in CHAT_TOOLS:
+                    continue
+                yield f"event: tool_call\ndata: {json.dumps({'name': name, 'args': args})}\n\n"
+                try:
+                    result = CHAT_TOOLS[name]["fn"](**args) if args else CHAT_TOOLS[name]["fn"]()
+                except TypeError:
+                    # Tools that take no args but were called with kwargs.
+                    result = CHAT_TOOLS[name]["fn"]()
+                except Exception as e:
+                    result = {"kind": "error", "payload": {"message": f"{type(e).__name__}: {e}"}}
+                tool_results.append({"name": name, **result})
+                used_kinds.append(result.get("kind", ""))
+                yield f"event: tool_result\ndata: {json.dumps({'name': name, **result})}\n\n"
+
+            # Phase 2 — synthesis. If no tools were called, fall back to RAG context.
+            if tool_results:
+                context_blob = json.dumps(
+                    [{"tool": r["name"], "kind": r["kind"], "data": r["payload"]} for r in tool_results],
+                    ensure_ascii=False,
+                )
+                synth_prompt = (
+                    "Write a concise 2-4 sentence narrative summarizing the tool "
+                    "results below for the user. Do NOT repeat the structured data "
+                    "verbatim (the UI already renders it as cards). Reference key "
+                    "numbers and call out anything noteworthy. Use markdown.\n\n"
+                    f"## query\n{body.query}\n\n## tool results\n{context_blob}"
+                )
+            else:
+                content = _retrieve_context(body.query, db) if db else "No invoices indexed."
+                synth_prompt = (
+                    "You are a helpful invoice chat assistant. Answer the query "
+                    "using only the provided content. Use proper markdown (headings, "
+                    "bold, lists, tables). Do not invent fields. If the query is "
+                    "unrelated to invoices, reply exactly: "
+                    '"I am an invoice helper assistant. Please ask invoice-related questions."\n\n'
+                    f"## query\n{body.query}\n\n## content\n{content}"
+                )
+
+            full: list[str] = []
+            for chunk in llm.stream(synth_prompt):
                 token = getattr(chunk, "content", "") or ""
                 if not token:
                     continue
                 full.append(token)
                 yield f"event: token\ndata: {json.dumps(token)}\n\n"
-            scores = {}
+
+            yield f"event: followups\ndata: {json.dumps(_suggest_followups(body.query, used_kinds))}\n\n"
+
+            scores: dict = {}
             try:
                 full_text = "".join(full)
                 review_prompt = (
                     "Score the answer 0-1 on confidence_score, groundness_score, "
                     "content_relevence as JSON only.\n"
-                    f"## query: {body.query}\n## content: {content}\n## response: {full_text}"
+                    f"## query: {body.query}\n## response: {full_text}"
                 )
                 rv = llm.invoke(review_prompt).content
                 start, end = rv.find("{"), rv.rfind("}")

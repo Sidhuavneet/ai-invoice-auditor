@@ -179,12 +179,32 @@ export async function chat(query: string): Promise<{
   return handle(res);
 }
 
+export type ChatToolResult = {
+  name: string;
+  kind: string;
+  payload: any;
+};
+
+export type ChatStreamHandlers = {
+  onToken: (t: string) => void;
+  onDone: (reviewed: Record<string, unknown>) => void;
+  onToolCall?: (call: { name: string; args: any }) => void;
+  onToolResult?: (result: ChatToolResult) => void;
+  onFollowups?: (suggestions: string[]) => void;
+  onError?: (msg: string) => void;
+};
+
 export async function chatStream(
   query: string,
-  onToken: (t: string) => void,
-  onDone: (reviewed: Record<string, unknown>) => void,
+  handlers: ((t: string) => void) | ChatStreamHandlers,
+  legacyOnDone?: (reviewed: Record<string, unknown>) => void,
   signal?: AbortSignal,
 ): Promise<void> {
+  // Back-compat: original 3-arg signature (onToken, onDone, signal).
+  const h: ChatStreamHandlers =
+    typeof handlers === "function"
+      ? { onToken: handlers, onDone: legacyOnDone || (() => {}) }
+      : handlers;
   const res = await fetch(`${API_URL}/chat/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -230,9 +250,15 @@ export async function chatStream(
         if (!data) continue;
         try {
           const parsed = JSON.parse(data);
-          if (event === "token") onToken(parsed as string);
-          else if (event === "done") onDone((parsed as any).reviewed_response || {});
-          else if (event === "error") throw new Error(String(parsed));
+          if (event === "token") h.onToken(parsed as string);
+          else if (event === "done") h.onDone((parsed as any).reviewed_response || {});
+          else if (event === "tool_call") h.onToolCall?.(parsed as any);
+          else if (event === "tool_result") h.onToolResult?.(parsed as any);
+          else if (event === "followups") h.onFollowups?.((parsed as any) || []);
+          else if (event === "error") {
+            h.onError?.(String(parsed));
+            throw new Error(String(parsed));
+          }
         } catch (e) {
           if (event === "error") throw e;
         }
