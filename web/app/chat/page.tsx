@@ -7,7 +7,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { ChatToolResult, chatStream } from "@/lib/api";
 import { Icon, Spinner, Toast } from "@/lib/ui";
 import { ToolCallChip, ToolResultRenderer } from "../_components/ChatTools";
-import { SlashItem, SlashPalette } from "../_components/SlashPalette";
+import { SlashItem, SlashPalette, pendingSlashArg } from "../_components/SlashPalette";
 
 type Message = {
   role: "user" | "assistant";
@@ -191,17 +191,25 @@ export default function ChatPage() {
             />
             <button
               onClick={() => send()}
-              disabled={loading || !input.trim()}
+              disabled={loading || !input.trim() || !!pendingSlashArg(input)}
               className="btn-primary"
             >
               {loading ? <Spinner /> : <Icon name="send" />}
               <span className="hidden sm:inline">Send</span>
             </button>
           </div>
-          <p className="mt-1.5 px-1 text-[11px] text-zinc-600">
-            Enter to send · Shift+Enter newline · <span className="font-mono text-violet-300">/</span>{" "}
-            for commands
-          </p>
+          {pendingSlashArg(input) ? (
+            <p className="mt-1.5 px-1 text-[11px] text-amber-300">
+              <Icon name="alert" className="mr-1 inline h-3 w-3" />
+              Finish the command — type a{" "}
+              <span className="font-mono">{pendingSlashArg(input)!.argPlaceholder}</span> then hit Enter.
+            </p>
+          ) : (
+            <p className="mt-1.5 px-1 text-[11px] text-zinc-600">
+              Enter to send · Shift+Enter newline ·{" "}
+              <span className="font-mono text-violet-300">/</span> for commands
+            </p>
+          )}
         </div>
       </div>
     </div>
@@ -345,17 +353,6 @@ function MessageBubble({
           </motion.div>
         )}
 
-        {/* Reviewed scores (collapsed) */}
-        {!isUser && message.reviewed && Object.keys(message.reviewed).length > 0 && (
-          <details className="ml-1 text-xs text-zinc-500">
-            <summary className="cursor-pointer hover:text-zinc-300">
-              <Icon name="info" className="mr-1 inline h-3 w-3" /> Answer relevancy
-            </summary>
-            <pre className="mt-1.5 max-w-md overflow-x-auto rounded-md border border-[color:var(--border)] bg-white/[0.03] p-2 text-[11px] text-zinc-300">
-              {JSON.stringify(message.reviewed, null, 2)}
-            </pre>
-          </details>
-        )}
       </div>
     </div>
   );

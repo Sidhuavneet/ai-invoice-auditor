@@ -11,6 +11,8 @@ export type SlashItem = {
   hint: string;
   prompt: string;
   icon: any;
+  needsArg?: boolean;       // true → user must finish typing before send
+  argPlaceholder?: string;  // shown as ghost hint after the prefix
 };
 
 const ITEMS: SlashItem[] = [
@@ -31,9 +33,11 @@ const ITEMS: SlashItem[] = [
   {
     id: "vendor",
     label: "/vendor",
-    hint: "Stats for one vendor",
+    hint: "Stats for one vendor — type a name",
     prompt: "Show me everything about vendor ",
     icon: "file",
+    needsArg: true,
+    argPlaceholder: "vendor name",
   },
   {
     id: "anomalies",
@@ -59,9 +63,11 @@ const ITEMS: SlashItem[] = [
   {
     id: "search",
     label: "/search",
-    hint: "Semantic invoice search",
+    hint: "Semantic search — type a phrase",
     prompt: "Search invoices for ",
     icon: "search",
+    needsArg: true,
+    argPlaceholder: "what to search",
   },
   {
     id: "help",
@@ -71,6 +77,18 @@ const ITEMS: SlashItem[] = [
     icon: "info",
   },
 ];
+
+/** Detect whether the current input is a slash-command prefix waiting for an
+ * argument the user hasn't typed yet. Used to disable Send and show a hint. */
+export function pendingSlashArg(input: string): SlashItem | null {
+  const trimmed = input.trimEnd();
+  for (const it of ITEMS) {
+    if (!it.needsArg) continue;
+    const prefix = it.prompt.trimEnd();
+    if (trimmed === prefix) return it;
+  }
+  return null;
+}
 
 export function SlashPalette({
   query,
@@ -95,10 +113,14 @@ export function SlashPalette({
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: 6 }}
       transition={{ duration: 0.15 }}
-      className="absolute bottom-full left-0 right-0 mb-2 overflow-hidden rounded-xl border border-[color:var(--border)] bg-[color:var(--bg-card)]/95 shadow-2xl backdrop-blur-xl"
+      className="absolute bottom-full left-0 right-0 mb-2 overflow-hidden rounded-xl border border-[color:var(--border)] shadow-2xl"
       style={{
+        // Fully opaque + heavy backdrop blur so the chat scrolling behind it
+        // doesn't bleed through. Sits above everything with strong shadow.
+        background: "#0a0a10",
+        backdropFilter: "blur(24px)",
         boxShadow:
-          "0 0 0 1px rgba(167,139,250,0.2), 0 20px 50px -12px rgba(0,0,0,0.7)",
+          "0 0 0 1px rgba(167,139,250,0.25), 0 25px 60px -15px rgba(0,0,0,0.85), 0 0 40px -12px rgba(0,0,0,0.6)",
       }}
     >
       <Command label="Slash commands">

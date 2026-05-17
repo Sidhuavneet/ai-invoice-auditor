@@ -6,6 +6,12 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+# Silence Chroma's anonymized-telemetry library — it logs "capture() takes 1
+# positional argument" warnings on every client init due to a version skew
+# with posthog. Disabling telemetry removes the noise entirely.
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
+os.environ.setdefault("CHROMA_TELEMETRY", "False")
+
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,6 +22,7 @@ load_dotenv()
 
 from agents.rag_agents.rag import rag_chat
 from agents.reporting_agent import _atomic_write_json
+from api import guardrails
 from graph import app as graph_app
 from graph import resumer
 from graph_utils import mailbox_utils
@@ -1068,6 +1075,15 @@ def tool_get_vendor_stats(vendor: str) -> dict:
     if not vendor:
         return {"kind": "error", "payload": {"message": "vendor required"}}
     target = vendor.strip().lower()
+    # Guard against placeholder-like values ("vendor", "name", "<vendor>") that
+    # come from users hitting send on an unfinished slash command.
+    if target in {"vendor", "name", "<vendor>", "vendor name"}:
+        return {
+            "kind": "error",
+            "payload": {
+                "message": "Looks like you didn't type a vendor name. Try '/vendor HafenLogistik' or just ask 'Show me HafenLogistik'.",
+            },
+        }
     matching = []
     for r in _load_all_reports():
         v = ((r.get("header") or {}).get("vendor_id") or "").strip().lower()
@@ -1114,6 +1130,109 @@ def tool_list_flagged() -> dict:
 def tool_get_overall_stats() -> dict:
     """KPI summary card across all reports."""
     return {"kind": "overall_stats", "payload": stats()}
+
+
+def tool_get_anomalies() -> dict:
+    """Return the anomalies list from /stats — same logic the dashboard uses."""
+    s = stats()
+    return {
+        "kind": "invoice_list",
+        "payload": {
+            "title": "Anomalies",
+            "items": [
+                {
+                    "file_name": a.get("file", ""),
+                    "vendor": a.get("vendor", ""),
+                    "currency": "",
+                    "total": a.get("amount", 0),
+                    "status": "manual_review",
+                    "recommendation": "manual_review",
+                    "reasons": [a.get("reason", "")],
+                    "invoice_no": "",
+                    "invoice_date": "",
+                    "line_item_count": 0,
+                }
+                for a in s.get("anomalies", [])
+            ],
+        },
+    }
+
+
+def tool_get_top_vendors(k: int = 5) -> dict:
+    """Top vendors by spend."""
+    s = stats()
+    top = s.get("top_vendors", [])[: max(1, min(int(k), 10))]
+    return {"kind": "top_vendors", "payload": {"vendors": top}}
+
+
+def tool_get_recent_invoices(k: int = 5) -> dict:
+    """Most recent invoices by invoice_date (or file mtime if no date)."""
+    items: list[tuple] = []
+    for r in _load_all_reports():
+        h = r.get("header") or {}
+        date = str(h.get("invoice_date") or "")[:10]
+        items.append((date, _summarize_invoice_for_card(r)))
+    # Sort by date desc; empty dates sink.
+    items.sort(key=lambda kv: (kv[0] or "0000-00-00"), reverse=True)
+    return {
+        "kind": "invoice_list",
+        "payload": {
+            "title": "Recent invoices",
+            "items": [it for _, it in items[: max(1, min(int(k), 10))]],
+        },
+    }
+
+
+def tool_approve_invoice(file_name: str, remarks: str = "") -> dict:
+    """Approve an invoice that is currently awaiting human review.
+
+    This is a WRITE tool — the LLM can take an action on the user's behalf.
+    Mirrors POST /invoices/{name}/decision.
+    """
+    if not file_name:
+        return {"kind": "error", "payload": {"message": "file_name required"}}
+    stem = file_name
+    if stem.endswith(".json") and stem.startswith("RE_"):
+        stem = stem[3:-5]
+    if "." in stem:
+        stem = stem[: stem.rfind(".")]
+    try:
+        resumer(name=stem, status="approved", remarks=remarks or "")
+    except Exception as e:
+        return {"kind": "error", "payload": {"message": f"Resume failed: {e}"}}
+    _move_to_processed(stem)
+    try:
+        _refresh_index_from_reports()
+    except Exception:
+        pass
+    return {
+        "kind": "action_result",
+        "payload": {"action": "approved", "file_name": stem, "remarks": remarks or ""},
+    }
+
+
+def tool_reject_invoice(file_name: str, remarks: str = "") -> dict:
+    """Reject an invoice awaiting human review. Companion to tool_approve_invoice."""
+    if not file_name:
+        return {"kind": "error", "payload": {"message": "file_name required"}}
+    stem = file_name
+    if stem.endswith(".json") and stem.startswith("RE_"):
+        stem = stem[3:-5]
+    if "." in stem:
+        stem = stem[: stem.rfind(".")]
+    try:
+        resumer(name=stem, status="rejected", remarks=remarks or "")
+    except Exception as e:
+        return {"kind": "error", "payload": {"message": f"Resume failed: {e}"}}
+    _move_to_processed(stem)
+    try:
+        _refresh_index_from_reports()
+    except Exception:
+        pass
+    return {
+        "kind": "action_result",
+        "payload": {"action": "rejected", "file_name": stem, "remarks": remarks or ""},
+    }
 
 
 def tool_search_invoices(query: str, k: int = 5) -> dict:
@@ -1213,6 +1332,81 @@ CHAT_TOOLS = {
         },
         "fn": tool_search_invoices,
     },
+    "get_anomalies": {
+        "spec": {
+            "type": "function",
+            "function": {
+                "name": "get_anomalies",
+                "description": "List statistically unusual invoices (amount >2σ from vendor median, future-dated, etc.).",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        "fn": lambda **_: tool_get_anomalies(),
+    },
+    "get_top_vendors": {
+        "spec": {
+            "type": "function",
+            "function": {
+                "name": "get_top_vendors",
+                "description": "Get the top N vendors by total spend.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"k": {"type": "integer", "default": 5}},
+                },
+            },
+        },
+        "fn": tool_get_top_vendors,
+    },
+    "get_recent_invoices": {
+        "spec": {
+            "type": "function",
+            "function": {
+                "name": "get_recent_invoices",
+                "description": "Get the N most recent invoices by invoice_date.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"k": {"type": "integer", "default": 5}},
+                },
+            },
+        },
+        "fn": tool_get_recent_invoices,
+    },
+    "approve_invoice": {
+        "spec": {
+            "type": "function",
+            "function": {
+                "name": "approve_invoice",
+                "description": "WRITE action — approve an invoice that is awaiting human review. Use only when the user explicitly asks to approve.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_name": {"type": "string"},
+                        "remarks": {"type": "string"},
+                    },
+                    "required": ["file_name"],
+                },
+            },
+        },
+        "fn": tool_approve_invoice,
+    },
+    "reject_invoice": {
+        "spec": {
+            "type": "function",
+            "function": {
+                "name": "reject_invoice",
+                "description": "WRITE action — reject an invoice that is awaiting human review. Use only when the user explicitly asks to reject.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_name": {"type": "string"},
+                        "remarks": {"type": "string"},
+                    },
+                    "required": ["file_name"],
+                },
+            },
+        },
+        "fn": tool_reject_invoice,
+    },
 }
 
 
@@ -1264,6 +1458,20 @@ def chat_stream(body: ChatBody):
     if db is None and not _load_all_reports():
         raise HTTPException(400, "No invoices indexed yet. Process invoices first.")
 
+    # ── Input guardrails — block prompt injection / off-topic, redact PII ──
+    guarded_input = guardrails.guard_input(body.query)
+    if guarded_input.blocked:
+        def refusal_stream():
+            msg = guardrails.REFUSAL_MESSAGES.get(
+                guarded_input.reason, "Your message was blocked by content filters."
+            )
+            for token in msg.split(" "):
+                yield f"event: token\ndata: {json.dumps(token + ' ')}\n\n"
+            yield f"event: followups\ndata: {json.dumps(['Show overall stats', 'List flagged invoices', 'Recent invoices'])}\n\n"
+            yield f"event: done\ndata: {json.dumps({})}\n\n"
+        return StreamingResponse(refusal_stream(), media_type="text/event-stream")
+    safe_query = guarded_input.text  # PII-redacted version goes to the LLM
+
     tool_specs = [t["spec"] for t in CHAT_TOOLS.values()]
 
     def event_stream():
@@ -1280,7 +1488,7 @@ def chat_stream(body: ChatBody):
                 "'riskiest', 'overall', 'how many') call get_overall_stats. For "
                 "specific vendors call get_vendor_stats with the exact name the user "
                 "wrote. For specific invoices call get_invoice. You may call 0-3 tools.\n\n"
-                f"User query: {body.query}"
+                f"User query: {safe_query}"
             )
             llm_with_tools = llm.bind_tools(tool_specs)
             tool_calls: list = []
@@ -1326,44 +1534,45 @@ def chat_stream(body: ChatBody):
                     "results below for the user. Do NOT repeat the structured data "
                     "verbatim (the UI already renders it as cards). Reference key "
                     "numbers and call out anything noteworthy. Use markdown.\n\n"
-                    f"## query\n{body.query}\n\n## tool results\n{context_blob}"
+                    f"## query\n{safe_query}\n\n## tool results\n{context_blob}"
                 )
             else:
-                content = _retrieve_context(body.query, db) if db else "No invoices indexed."
+                content = _retrieve_context(safe_query, db) if db else "No invoices indexed."
                 synth_prompt = (
                     "You are a helpful invoice chat assistant. Answer the query "
                     "using only the provided content. Use proper markdown (headings, "
                     "bold, lists, tables). Do not invent fields. If the query is "
                     "unrelated to invoices, reply exactly: "
                     '"I am an invoice helper assistant. Please ask invoice-related questions."\n\n'
-                    f"## query\n{body.query}\n\n## content\n{content}"
+                    f"## query\n{safe_query}\n\n## content\n{content}"
                 )
 
+            # Output guardrail: redact PII the model might have echoed before
+            # showing tokens. Done per-token-buffer (small window flush so
+            # streaming feels live but multi-token patterns still get caught).
             full: list[str] = []
+            buf = ""
             for chunk in llm.stream(synth_prompt):
                 token = getattr(chunk, "content", "") or ""
                 if not token:
                     continue
-                full.append(token)
-                yield f"event: token\ndata: {json.dumps(token)}\n\n"
+                buf += token
+                # Flush once buffer has whitespace at the end (token boundary).
+                if buf and buf[-1] in " \n\t.,;:!?":
+                    safe = guardrails.guard_output(buf).text
+                    full.append(safe)
+                    yield f"event: token\ndata: {json.dumps(safe)}\n\n"
+                    buf = ""
+            if buf:
+                safe = guardrails.guard_output(buf).text
+                full.append(safe)
+                yield f"event: token\ndata: {json.dumps(safe)}\n\n"
 
-            yield f"event: followups\ndata: {json.dumps(_suggest_followups(body.query, used_kinds))}\n\n"
-
-            scores: dict = {}
-            try:
-                full_text = "".join(full)
-                review_prompt = (
-                    "Score the answer 0-1 on confidence_score, groundness_score, "
-                    "content_relevence as JSON only.\n"
-                    f"## query: {body.query}\n## response: {full_text}"
-                )
-                rv = llm.invoke(review_prompt).content
-                start, end = rv.find("{"), rv.rfind("}")
-                if start != -1 and end != -1:
-                    scores = json.loads(rv[start : end + 1])
-            except Exception:
-                scores = {}
-            yield f"event: done\ndata: {json.dumps({'reviewed_response': scores})}\n\n"
+            yield f"event: followups\ndata: {json.dumps(_suggest_followups(safe_query, used_kinds))}\n\n"
+            # Note: self-scored "answer relevancy" was removed — an LLM grading
+            # its own answer is biased and noisy. Real eval happens via
+            # LangSmith feedback (thumbs up/down) and offline judge models.
+            yield f"event: done\ndata: {json.dumps({})}\n\n"
         except Exception as e:
             yield f"event: error\ndata: {json.dumps(str(e))}\n\n"
 

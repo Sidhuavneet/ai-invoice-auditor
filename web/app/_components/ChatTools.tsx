@@ -16,6 +16,10 @@ export function ToolResultRenderer({ kind, payload }: { kind: string; payload: a
       return <InvoiceList title={payload.title} items={payload.items || []} />;
     case "overall_stats":
       return <OverallStatsCard data={payload} />;
+    case "top_vendors":
+      return <TopVendorsCard vendors={payload.vendors || []} />;
+    case "action_result":
+      return <ActionResultCard data={payload} />;
     case "error":
       return (
         <div className="rounded-lg border border-rose-500/30 bg-rose-500/5 px-3 py-2 text-sm text-rose-200">
@@ -52,6 +56,11 @@ const TOOL_LABELS: Record<string, string> = {
   list_flagged: "flagged invoices",
   get_overall_stats: "overall stats",
   search_invoices: "search",
+  get_anomalies: "anomaly scan",
+  get_top_vendors: "top vendors",
+  get_recent_invoices: "recent invoices",
+  approve_invoice: "approving invoice",
+  reject_invoice: "rejecting invoice",
 };
 
 /* ─── Invoice Card ─────────────────────────────────────────────────────── */
@@ -215,6 +224,91 @@ function VendorCard({ data }: { data: any }) {
           ))}
         </ul>
       )}
+    </motion.div>
+  );
+}
+
+/* ─── Top Vendors Card ────────────────────────────────────────────────── */
+
+function TopVendorsCard({ vendors }: { vendors: any[] }) {
+  if (!vendors || vendors.length === 0)
+    return (
+      <div className="card flex items-center gap-2 p-3 text-sm text-zinc-400">
+        <Icon name="info" className="h-4 w-4" /> No vendors yet.
+      </div>
+    );
+  const max = Math.max(...vendors.map((v) => Number(v.spend) || 0));
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3 }}
+      className="card overflow-hidden"
+    >
+      <div className="border-b border-[color:var(--border)] px-3 py-2 text-xs font-medium uppercase tracking-wider text-zinc-400">
+        Top vendors by spend
+      </div>
+      <ul className="divide-y divide-[color:var(--border)]">
+        {vendors.map((v, i) => {
+          const pct = max ? (Number(v.spend) / max) * 100 : 0;
+          return (
+            <li key={v.vendor || i} className="space-y-1 px-3 py-2.5">
+              <div className="flex items-center justify-between text-sm">
+                <span className="truncate text-zinc-100">{v.vendor}</span>
+                <span className="ml-2 shrink-0 tabular-nums text-zinc-300">
+                  {formatCurrency(v.spend, v.currency || "USD")}
+                  <span className="ml-2 text-zinc-500">· {v.count}</span>
+                </span>
+              </div>
+              <div className="h-1.5 overflow-hidden rounded-full bg-white/[0.04]">
+                <motion.div
+                  initial={{ width: 0 }}
+                  animate={{ width: `${pct}%` }}
+                  transition={{ duration: 0.5, delay: i * 0.05 }}
+                  className="h-full rounded-full"
+                  style={{
+                    background:
+                      "linear-gradient(90deg, rgb(167,139,250) 0%, rgb(34,211,238) 100%)",
+                  }}
+                />
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </motion.div>
+  );
+}
+
+/* ─── Action Result Card (approve/reject confirmation) ───────────────── */
+
+function ActionResultCard({ data }: { data: any }) {
+  const isApprove = data.action === "approved";
+  return (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.97 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ duration: 0.3 }}
+      className={`flex items-start gap-3 rounded-xl border p-3 ${
+        isApprove
+          ? "border-emerald-500/30 bg-emerald-500/[0.06]"
+          : "border-rose-500/30 bg-rose-500/[0.06]"
+      }`}
+    >
+      <span
+        className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
+          isApprove ? "bg-emerald-500/20 text-emerald-200" : "bg-rose-500/20 text-rose-200"
+        }`}
+      >
+        <Icon name={isApprove ? "check" : "x"} className="h-4 w-4" />
+      </span>
+      <div className="min-w-0">
+        <div className={`text-sm font-semibold ${isApprove ? "text-emerald-200" : "text-rose-200"}`}>
+          {isApprove ? "Approved" : "Rejected"}
+        </div>
+        <div className="mt-0.5 truncate text-xs text-zinc-400">{data.file_name}</div>
+        {data.remarks && <div className="mt-1 text-xs italic text-zinc-500">"{data.remarks}"</div>}
+      </div>
     </motion.div>
   );
 }
