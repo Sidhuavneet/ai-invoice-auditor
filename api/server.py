@@ -56,13 +56,40 @@ app = FastAPI(title="AI Invoice Auditor API")
 
 @app.on_event("startup")
 def _bootstrap_index():
-    """Build Chroma index from existing reports on first boot so chat is live immediately."""
-    if (DOC_DB_DIR / "chroma.sqlite3").exists():
-        return
+    """Build Chroma index from existing reports on first boot so chat is live immediately.
+
+    Logic:
+      - Local backend: skip if chroma.sqlite3 already exists (already indexed).
+      - Cloud backend: always check collection count and refresh if empty.
+        Also, if we're moving from local→cloud (manifest exists but cloud
+        collection is empty), drop the stale manifest so every report
+        re-embeds into the cloud.
+    """
     try:
-        n = _refresh_index_from_reports()
-        if n:
-            print(f"[startup] Indexed {n} chunks from existing reports.")
+        if _is_cloud_chroma():
+            db = _open_chroma()
+            try:
+                count = db._collection.count()
+            except Exception:
+                count = 0
+            if count == 0:
+                if MANIFEST_PATH.exists():
+                    print("[startup] Cloud Chroma collection empty — dropping stale local manifest for fresh re-embed.")
+                    try:
+                        MANIFEST_PATH.unlink()
+                    except Exception:
+                        pass
+                n = _refresh_index_from_reports()
+                if n:
+                    print(f"[startup] Indexed {n} chunks into Chroma Cloud.")
+            else:
+                print(f"[startup] Chroma Cloud already has {count} vectors — skipping re-embed.")
+        else:
+            if (DOC_DB_DIR / "chroma.sqlite3").exists():
+                return
+            n = _refresh_index_from_reports()
+            if n:
+                print(f"[startup] Indexed {n} chunks from existing reports (local).")
     except Exception as e:
         print(f"[startup] Index bootstrap skipped: {e}")
 
@@ -737,8 +764,34 @@ def _save_manifest(m: dict) -> None:
     _atomic_write_json(str(MANIFEST_PATH), m)
 
 
+def _is_cloud_chroma() -> bool:
+    """Env-driven toggle: present API key + tenant means we point at Chroma Cloud."""
+    return bool(os.environ.get("CHROMA_API_KEY") and os.environ.get("CHROMA_TENANT"))
+
+
 def _open_chroma() -> Chroma:
-    """Open (or create) the persistent Chroma collection used by chat."""
+    """Open (or create) the Chroma collection used by chat.
+
+    Two backends, switched purely by env:
+      - **Chroma Cloud** when CHROMA_API_KEY + CHROMA_TENANT are set → hosted,
+        survives redeploys, no local files needed.
+      - **Local persistent** otherwise → docDB/chroma.sqlite3, good for dev.
+
+    In both cases we use the same embedding model (sentence-transformers
+    all-MiniLM-L6-v2) so a switch doesn't require re-embedding everything.
+    """
+    if _is_cloud_chroma():
+        import chromadb
+        client = chromadb.CloudClient(
+            api_key=os.environ["CHROMA_API_KEY"],
+            tenant=os.environ["CHROMA_TENANT"],
+            database=os.environ.get("CHROMA_DATABASE", "invoice-auditor"),
+        )
+        return Chroma(
+            client=client,
+            collection_name=CHROMA_COLLECTION,
+            embedding_function=embedding_model,
+        )
     return Chroma(
         collection_name=CHROMA_COLLECTION,
         embedding_function=embedding_model,
@@ -813,8 +866,11 @@ def _refresh_index_from_reports(force: bool = False) -> int:
 
 @app.post("/rebuild-index")
 def rebuild_index():
-    """Force a full rebuild of the Chroma index from outputs/reports/*.json."""
-    # Drop the entire collection so we rebuild from zero.
+    """Force a full rebuild of the Chroma index from outputs/reports/*.json.
+
+    Works against both local and cloud backends — `delete_collection()` is
+    backend-agnostic in langchain-chroma.
+    """
     try:
         db = _open_chroma()
         db.delete_collection()
@@ -828,7 +884,7 @@ def rebuild_index():
     n = _refresh_index_from_reports(force=True)
     if n == 0:
         raise HTTPException(400, "No reports found in outputs/reports/.")
-    return {"ok": True, "indexed": n}
+    return {"ok": True, "indexed": n, "backend": "cloud" if _is_cloud_chroma() else "local"}
 
 
 class UploadUrlBody(BaseModel):
@@ -916,11 +972,16 @@ async def upload_invoice(file: UploadFile = File(...)):
 
 
 def _load_db() -> Optional[Chroma]:
-    # Chroma writes a sqlite file on first add; absent file = nothing indexed.
-    if not (DOC_DB_DIR / "chroma.sqlite3").exists():
-        return None
+    """Return the Chroma vector store if it has any data, else None.
+
+    Local backend: skip the disk-file probe if no sqlite present.
+    Cloud backend: query the collection count directly.
+    """
+    if not _is_cloud_chroma():
+        # Chroma writes a sqlite file on first add; absent file = nothing indexed.
+        if not (DOC_DB_DIR / "chroma.sqlite3").exists():
+            return None
     db = _open_chroma()
-    # An empty collection is equivalent to "not indexed yet" for chat purposes.
     try:
         if db._collection.count() == 0:
             return None
