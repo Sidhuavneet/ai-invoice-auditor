@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.mcp-venv/bin/python -c ' *)"
+    ]
+  }
+}

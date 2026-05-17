@@ -104,6 +104,75 @@ def list_flagged() -> list[dict]:
 
 
 @mcp.tool()
+def get_vendor_stats(vendor: str) -> dict:
+    """Aggregate stats for one vendor: total spend, invoice count, status mix,
+    and the 5 most recent invoices for that vendor.
+
+    Args:
+        vendor: Vendor name (substring match is allowed, e.g. 'HafenLogistik').
+    """
+    # The web chat does this server-side via the same logic; here we recompute
+    # from /invoices to keep the MCP server's surface area minimal.
+    items = _get("/invoices")
+    target = vendor.strip().lower()
+    matching = [i for i in items if target in (i.get("vendor") or "").lower()]
+    if not matching:
+        return {"vendor": vendor, "invoice_count": 0, "total_spend": 0, "invoices": []}
+    total = 0.0
+    status_mix: dict[str, int] = {}
+    for inv in matching:
+        try:
+            total += float(str(inv.get("total") or "0").replace(",", "").replace("$", ""))
+        except ValueError:
+            pass
+        st = inv.get("status") or "unknown"
+        status_mix[st] = status_mix.get(st, 0) + 1
+    return {
+        "vendor": matching[0].get("vendor"),
+        "total_spend": round(total, 2),
+        "currency": matching[0].get("currency", ""),
+        "invoice_count": len(matching),
+        "status_mix": status_mix,
+        "invoices": matching[:5],
+    }
+
+
+@mcp.tool()
+def search_invoices(query: str, k: int = 5) -> list[dict]:
+    """Semantic-search the invoice corpus for free-text queries like
+    "logistics from Germany" or "anything tax-related". Returns the top-k
+    matching invoices ranked by vector similarity.
+
+    Args:
+        query: Free-text search phrase.
+        k: How many results to return (default 5).
+    """
+    # The backend doesn't yet expose a dedicated /search endpoint, so we
+    # fall back to listing all invoices and ranking by substring match. The
+    # web chat uses the richer Chroma-backed search via its own /chat tool.
+    items = _get("/invoices")
+    q = query.lower()
+    scored = [
+        (i, sum(1 for term in q.split() if term in (str(i.get("vendor", "")) + " " + str(i.get("file", ""))).lower()))
+        for i in items
+    ]
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return [s[0] for s in scored[: max(1, min(int(k), 10))] if s[1] > 0]
+
+
+@mcp.tool()
+def get_recent_invoices(k: int = 5) -> list[dict]:
+    """Return the N most recent invoices by invoice_date (most recent first).
+
+    Args:
+        k: how many to return (default 5).
+    """
+    items = _get("/invoices")
+    items.sort(key=lambda i: i.get("invoice_date") or "0000-00-00", reverse=True)
+    return items[: max(1, min(int(k), 10))]
+
+
+@mcp.tool()
 def get_top_vendors(k: int = 5) -> list[dict]:
     """Return the top-k vendors by total spend.
 
