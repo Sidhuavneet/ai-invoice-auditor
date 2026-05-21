@@ -8,6 +8,7 @@ import { Icon } from "@/lib/ui";
 const items = [
   { href: "/", label: "Dashboard", icon: "home" as const },
   { href: "/chat", label: "QA Chat", icon: "chat" as const },
+  { href: "/tech", label: "Tech Stack", icon: "sparkles" as const },
 ];
 
 export function SideNav() {
