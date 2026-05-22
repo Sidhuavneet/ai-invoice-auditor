@@ -28,12 +28,18 @@ state_memory.db-wal
 # Generated reports + vector store (regenerate at runtime)
 outputs/added.json
 outputs/errors/
+outputs/reports/*.json
+inbox/processed/
 docDB/chroma.sqlite3*
 docDB/*/
 docDB/manifest.json
+
+# Scratch notebooks
+*.ipynb
 
 # Next.js / web
 web/node_modules
 web/.next
 web/out
 web/next-env.d.ts
+web/tsconfig.tsbuildinfo
