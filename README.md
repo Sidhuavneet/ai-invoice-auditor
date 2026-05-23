@@ -2,7 +2,7 @@
 
 An end-to-end **multi-agent AI system** that ingests invoices (PDF, DOCX, scanned images), extracts structured data, validates it against configurable business rules, flags discrepancies for human review, and answers natural-language questions about processed invoices via a RAG chatbot.
 
-Built with **LangGraph**, **LangChain**, **Groq (Llama 3.3 70B)**, **FAISS**, **FastAPI**, and **Next.js**.
+Built with **LangGraph**, **LangChain**, **Groq (Llama 3.3 70B)**, **Chroma**, **Supabase (Postgres + Storage)**, **FastAPI**, and **Next.js**.
 
 ---
 
@@ -15,7 +15,8 @@ Built with **LangGraph**, **LangChain**, **Groq (Llama 3.3 70B)**, **FAISS**, **
 - **Rules engine** — business rules (tolerances, accepted currencies, validation policies) driven by `config/rules.yaml`, decoupled from code
 - **Mock ERP integration** — simulates enterprise lookups for PO/vendor reconciliation
 - **RAG chatbot** — FAISS + sentence-transformers embeddings let users query processed invoices in natural language
-- **Stateful & resumable** — SQLite checkpointing via LangGraph survives restarts and supports human-review interrupts
+- **Stateful & resumable** — LangGraph Postgres checkpointer (Supabase) survives restarts and supports human-review interrupts
+- **Cloud storage** — invoice blobs in Supabase Storage, structured reports in Postgres `reports` table; no filesystem persistence required
 - **FastAPI backend + Next.js frontend** — typed REST API consumed by an App Router dashboard
 
 ---
@@ -59,9 +60,9 @@ Inbox  ──►  Extractor ──►  Translator ──►  Validator ──►
 
 - **Orchestration:** LangGraph, LangChain
 - **LLMs:** Groq — `llama-3.3-70b-versatile` (reasoning), `llama-3.1-8b-instant` (utility)
-- **Embeddings / RAG:** sentence-transformers (`all-MiniLM-L6-v2`), FAISS
+- **Embeddings / RAG:** sentence-transformers (`all-MiniLM-L6-v2`), Chroma (Cloud or local)
 - **OCR & Parsing:** Tesseract, pypdf, python-docx, Pillow
-- **State:** SQLite (LangGraph checkpointer)
+- **State + Blobs:** Supabase Postgres (LangGraph checkpoints + `reports` table) and Supabase Storage (PDF/DOCX/image blobs)
 - **Backend API:** FastAPI + Uvicorn
 - **Frontend:** Next.js 14 (App Router), TypeScript, Tailwind CSS
 - **Config:** YAML rules file
@@ -89,6 +90,10 @@ pip install -r requirements.txt
 
 cp .env.example .env
 # add your GROQ_API_KEY (free from https://console.groq.com/keys)
+# add your Supabase credentials — see "Supabase setup" below
+
+# One-time: migrate any pre-existing local reports/PDFs into Supabase.
+python -m scripts.migrate_to_supabase
 
 uvicorn api.server:app --reload --port 8000
 ```
@@ -104,7 +109,43 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:3000. Upload an invoice (or drop one into `inbox/`), click **Process New Invoices**, then review reports or open the QA chat.
+Open http://localhost:3000. Upload an invoice via the UI (it lands in the Supabase Storage `invoices` bucket under `inbox/`), click **Process New Invoices**, then review reports or open the QA chat.
+
+---
+
+## Supabase setup
+
+1. Create a free Supabase project at https://supabase.com.
+2. In the SQL Editor, run:
+   ```sql
+   create table reports (
+     file_name      text primary key,
+     report         jsonb not null,
+     vendor         text,
+     total          numeric,
+     currency       text,
+     invoice_date   date,
+     status         text,
+     recommendation text,
+     flags          jsonb,
+     processed_at   timestamptz default now(),
+     updated_at     timestamptz default now()
+   );
+   create index reports_vendor_idx on reports (vendor);
+   create index reports_status_idx on reports (status);
+   create index reports_date_idx   on reports (invoice_date);
+   create index reports_flags_gin  on reports using gin (flags);
+
+   create table processed_files (
+     file_name text primary key,
+     added_at  timestamptz default now()
+   );
+   ```
+3. **Storage → New bucket** → name it `invoices`, set to **Private**.
+4. **Connect → Session pooler URI** → paste into `SUPABASE_DB_URL` (use a DB password with no special characters).
+5. Drop `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` from **Project Settings → API** into `.env`.
+
+LangGraph's `PostgresSaver` will create its own checkpoint tables automatically on first run.
 
 ---
 
@@ -112,12 +153,13 @@ Open http://localhost:3000. Upload an invoice (or drop one into `inbox/`), click
 
 | Method | Path | Description |
 |---|---|---|
-| POST | `/process` | Drain `inbox/` through the LangGraph pipeline |
-| POST | `/upload` | Multipart upload an invoice into `inbox/` |
-| GET  | `/invoices` | List processed invoice reports (summaries) |
-| GET  | `/invoices/{name}` | Full JSON report |
+| POST | `/process` | Drain the Storage `inbox/` through the LangGraph pipeline |
+| POST | `/upload` | Multipart upload an invoice into the Storage `inbox/` |
+| GET  | `/invoices` | List processed invoice reports from Postgres (summaries) |
+| GET  | `/invoices/{name}` | Full JSON report from Postgres |
+| GET  | `/invoices/{name}/file` | Stream the original blob from Storage |
 | POST | `/invoices/{name}/decision` | Resume a paused HITL run with `{ status, remarks }` |
-| POST | `/chat` | Ask a question — runs the RAG sub-graph against FAISS |
+| POST | `/chat` | Ask a question — runs the RAG sub-graph against Chroma |
 
 ---
 

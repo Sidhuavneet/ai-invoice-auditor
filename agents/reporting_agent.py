@@ -1,6 +1,8 @@
 import json
 import os
 import tempfile
+
+from api import db as supadb
 from graph_utils.llm_gateway import LLM_Gateway
 
 
@@ -57,7 +59,9 @@ def reporting(state):
     result["remarks"] = state["remarks"]
     result["human_report"] = state["human_report"]
     result["pipeline_status"] = "ok"
-    _atomic_write_json(f"outputs/reports/RE_{state['file_name']}.json", result)
+    file_path = state.get("file_path") or ""
+    source_name = os.path.basename(file_path) if file_path else f"{state['file_name']}.pdf"
+    supadb.upsert_report(source_name, result)
     return state
 
 

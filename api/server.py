@@ -1,7 +1,6 @@
 import json
 import os
 import re
-import shutil
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -15,14 +14,16 @@ os.environ.setdefault("CHROMA_TELEMETRY", "False")
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 load_dotenv()
 
 from agents.rag_agents.rag import rag_chat
 from agents.reporting_agent import _atomic_write_json
+from api import db as supadb
 from api import guardrails
+from api import storage as supastorage
 from graph import app as graph_app
 from graph import resumer
 from graph_utils import mailbox_utils
@@ -31,14 +32,15 @@ from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_groq import ChatGroq
 
-REPORTS_DIR = Path("outputs/reports")
+# Local working dirs — transient. Supabase Postgres is source of truth for
+# reports, and Supabase Storage is canonical for original blobs. Local inbox/
+# is a download cache populated by mailbox_utils.poll().
 INBOX_DIR = Path("inbox")
 PROCESSED_DIR = INBOX_DIR / "processed"
 DOC_DB_DIR = Path("docDB")
 CHROMA_COLLECTION = "invoice_reports"
 ERRORS_DIR = Path("outputs/errors")
 
-REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 INBOX_DIR.mkdir(parents=True, exist_ok=True)
 PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 DOC_DB_DIR.mkdir(parents=True, exist_ok=True)
@@ -140,15 +142,12 @@ def _canon_recommendation(raw) -> str:
     return s
 
 
-def _summarize_report(filename: str) -> dict:
-    try:
-        with open(REPORTS_DIR / filename, "r") as f:
-            data = json.load(f)
-    except Exception:
-        return {"file": filename, "status": "error", "recommendation": "", "vendor": "", "invoice_no": "", "total": "", "pipeline_status": "error"}
+def _summarize_report(data: dict, source_name: str = "") -> dict:
+    """Project a report dict into the summary shape the dashboard list expects."""
     header = data.get("header", {}) or {}
+    name = source_name or data.get("file_name", "") or ""
     return {
-        "file": filename,
+        "file": name,
         "invoice_no": header.get("invoice_no", ""),
         "invoice_date": header.get("invoice_date", ""),
         "vendor": header.get("vendor_id", ""),
@@ -190,30 +189,21 @@ def stats():
     from collections import Counter, defaultdict
     from statistics import median, pstdev
 
-    reports = []
-    if REPORTS_DIR.exists():
-        for f in sorted(os.listdir(REPORTS_DIR)):
-            if not (f.startswith("RE_") and f.endswith(".json")):
-                continue
-            try:
-                data = json.loads((REPORTS_DIR / f).read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            reports.append(data)
+    reports = supadb.list_reports()
 
+    # Pending = files sitting in the bucket inbox/ that don't yet have a report.
     pending_count = 0
-    if INBOX_DIR.exists():
+    try:
         exts = (".pdf", ".docx", ".png", ".jpg", ".jpeg")
         report_stems = {r.get("file_name", "") for r in reports}
-        for f in sorted(os.listdir(INBOX_DIR)):
-            full = INBOX_DIR / f
-            if not full.is_file():
-                continue
+        for f in supastorage.list_dir("inbox"):
             if not f.lower().endswith(exts):
                 continue
             stem = f[: f.rfind(".")]
             if stem not in report_stems:
                 pending_count += 1
+    except Exception as e:
+        print(f"[stats] pending count failed: {e}")
 
     total = len(reports)
     status_counts: Counter = Counter()
@@ -365,17 +355,14 @@ def stats():
 def list_invoices():
     items: list[dict] = []
     seen_stems: set[str] = set()
-    if REPORTS_DIR.exists():
-        for f in sorted(os.listdir(REPORTS_DIR)):
-            if f.endswith(".json") and f.startswith("RE_"):
-                items.append(_summarize_report(f))
-                seen_stems.add(f[3:-5])
-    if INBOX_DIR.exists():
+    for r in supadb.list_reports():
+        stem = r.get("file_name", "") or ""
+        items.append(_summarize_report(r, source_name=f"RE_{stem}.json" if stem else ""))
+        if stem:
+            seen_stems.add(stem)
+    try:
         exts = (".pdf", ".docx", ".png", ".jpg", ".jpeg")
-        for f in sorted(os.listdir(INBOX_DIR)):
-            full = INBOX_DIR / f
-            if not full.is_file():
-                continue
+        for f in supastorage.list_dir("inbox"):
             if not f.lower().endswith(exts):
                 continue
             stem = f[: f.rfind(".")]
@@ -392,32 +379,41 @@ def list_invoices():
                 "status": "pending",
                 "pipeline_status": "pending",
             })
+    except Exception as e:
+        print(f"[invoices] inbox listing failed: {e}")
     return items
 
 
 @app.get("/invoices/{name}")
 def get_invoice(name: str):
-    path = REPORTS_DIR / name
-    if path.exists() and name.endswith(".json"):
-        with open(path, "r") as f:
-            data = json.load(f)
-            data["status"] = _canon_status(data.get("status"))
-            data["recommendation"] = _canon_recommendation(data.get("recommendation"))
-            return data
-    if not name.endswith(".json"):
-        stem = name[: name.rfind(".")] if "." in name else name
-        report_path = REPORTS_DIR / f"RE_{stem}.json"
-        if report_path.exists():
-            with open(report_path, "r") as f:
-                data = json.load(f)
-                data["status"] = _canon_status(data.get("status"))
-                data["recommendation"] = _canon_recommendation(data.get("recommendation"))
-                return data
-    inbox_path = INBOX_DIR / name
-    if not inbox_path.exists():
-        inbox_path = PROCESSED_DIR / name
-    if inbox_path.exists():
-        stem = name[: name.rfind(".")] if "." in name else name
+    # Strip RE_<stem>.json prefix/suffix so we always look up by the source filename.
+    lookup = name
+    if lookup.endswith(".json") and lookup.startswith("RE_"):
+        stem = lookup[3:-5]
+    else:
+        stem = lookup[: lookup.rfind(".")] if "." in lookup else lookup
+
+    # First: by source filename (with extension).
+    data = supadb.get_report(lookup) if not lookup.endswith(".json") else None
+    if data is None:
+        # Fallback: scan reports and match by internal stem.
+        for r in supadb.list_reports():
+            if r.get("file_name", "") == stem:
+                data = r
+                break
+
+    if data is not None:
+        data["status"] = _canon_status(data.get("status"))
+        data["recommendation"] = _canon_recommendation(data.get("recommendation"))
+        return data
+
+    # No report yet — check if the source blob exists (pending or errored).
+    blob_exists = False
+    for prefix in ("inbox", "processed"):
+        if supastorage.exists(f"{prefix}/{name}"):
+            blob_exists = True
+            break
+    if blob_exists:
         err_path = ERRORS_DIR / f"{stem}.json"
         if err_path.exists():
             try:
@@ -449,41 +445,46 @@ def get_invoice(name: str):
 
 @app.get("/invoices/{name}/file")
 def get_invoice_file(name: str):
-    """Stream the original uploaded file for preview.
+    """Stream the original uploaded file for preview, fetched from Supabase Storage."""
+    from fastapi.responses import Response
 
-    Looks in inbox/, inbox/processed/, then falls back to matching by stem
-    (so the UI can pass either the inbox filename or RE_<stem>.json).
-    """
-    # Strip directory components to prevent traversal.
     safe = Path(name).name
     if safe.endswith(".json") and safe.startswith("RE_"):
         safe = safe[3:-5]
     stem = safe[: safe.rfind(".")] if "." in safe else safe
-    candidates: list[Path] = []
+
+    candidates: list[str] = []
     # Exact name match first.
-    for base in (INBOX_DIR, PROCESSED_DIR):
-        candidates.append(base / safe)
+    for prefix in ("inbox", "processed"):
+        candidates.append(f"{prefix}/{safe}")
     # Stem match across known extensions.
-    for base in (INBOX_DIR, PROCESSED_DIR):
+    for prefix in ("inbox", "processed"):
         for ext in (".pdf", ".png", ".jpg", ".jpeg", ".docx"):
-            candidates.append(base / f"{stem}{ext}")
-    for c in candidates:
-        if c.is_file():
-            media = {
-                ".pdf": "application/pdf",
-                ".png": "image/png",
-                ".jpg": "image/jpeg",
-                ".jpeg": "image/jpeg",
-                ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            }.get(c.suffix.lower(), "application/octet-stream")
-            # content_disposition_type="inline" so browsers render PDFs/images
-            # in an iframe/img instead of forcing a download prompt.
-            return FileResponse(
-                str(c),
-                media_type=media,
-                filename=c.name,
-                content_disposition_type="inline",
-            )
+            candidates.append(f"{prefix}/{stem}{ext}")
+
+    media_by_ext = {
+        ".pdf": "application/pdf",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }
+    seen: set[str] = set()
+    for path in candidates:
+        if path in seen:
+            continue
+        seen.add(path)
+        try:
+            data = supastorage.download(path)
+        except Exception:
+            continue
+        ext = Path(path).suffix.lower()
+        media = media_by_ext.get(ext, "application/octet-stream")
+        return Response(
+            content=data,
+            media_type=media,
+            headers={"Content-Disposition": f'inline; filename="{Path(path).name}"'},
+        )
     raise HTTPException(404, "Source file not found")
 
 
@@ -511,25 +512,44 @@ def submit_decision(name: str, body: DecisionBody):
 
 
 def _move_to_processed(stem: str) -> None:
+    """Move the source blob (and meta sidecar) from bucket inbox/ → processed/.
+
+    Also clears the processed-files tracker for that filename so a future
+    re-upload of the same name triggers a fresh /process pass.
+    """
     for ext in (".pdf", ".docx", ".png", ".jpg", ".jpeg"):
-        src = INBOX_DIR / f"{stem}{ext}"
-        if src.exists() and src.is_file():
-            try:
-                shutil.move(str(src), str(PROCESSED_DIR / src.name))
-                # Also drop from added.json so re-uploading the same filename
-                # later triggers a fresh /process pass.
-                try:
-                    mailbox_utils.unmark(src.name)
-                except Exception:
-                    pass
-            except Exception as e:
-                print(f"[processed-move] {src.name}: {e}")
-    meta = INBOX_DIR / f"{stem}.meta.json"
-    if meta.exists():
+        name = f"{stem}{ext}"
+        src = supastorage.inbox_path(name)
+        if not supastorage.exists(src):
+            continue
         try:
-            shutil.move(str(meta), str(PROCESSED_DIR / meta.name))
+            supastorage.move(src, supastorage.processed_path(name))
+        except Exception as e:
+            print(f"[processed-move] {name}: {e}")
+        try:
+            mailbox_utils.unmark(name)
         except Exception:
             pass
+        # Drop the local cache copy so disk doesn't accumulate.
+        local = INBOX_DIR / name
+        if local.exists():
+            try:
+                local.unlink()
+            except Exception:
+                pass
+    meta_name = f"{stem}.meta.json"
+    meta_src = supastorage.inbox_path(meta_name)
+    if supastorage.exists(meta_src):
+        try:
+            supastorage.move(meta_src, supastorage.processed_path(meta_name))
+        except Exception:
+            pass
+        local_meta = INBOX_DIR / meta_name
+        if local_meta.exists():
+            try:
+                local_meta.unlink()
+            except Exception:
+                pass
 
 
 @app.post("/process")
@@ -802,8 +822,9 @@ def _open_chroma() -> Chroma:
 def _refresh_index_from_reports(force: bool = False) -> int:
     """Embed only reports that are new or changed. Single writer for the vector DB.
 
-    On change, deletes the old vector IDs for that report before re-adding,
-    so re-processing a file does not accumulate duplicates.
+    Reads reports from Supabase Postgres (via supadb). Manifest is a small
+    local JSON file that tracks per-report vector IDs so re-processing doesn't
+    accumulate duplicate vectors.
     """
     from langchain_text_splitters import RecursiveJsonSplitter
 
@@ -814,11 +835,18 @@ def _refresh_index_from_reports(force: bool = False) -> int:
     new_manifest = dict(manifest)
     added_total = 0
 
-    current_reports = {p.name for p in REPORTS_DIR.glob("RE_*.json")}
+    reports_by_stem: dict[str, dict] = {}
+    for r in supadb.list_reports():
+        stem = r.get("file_name", "")
+        if stem:
+            reports_by_stem[stem] = r
 
-    # 1) Drop manifest entries for reports that no longer exist on disk.
+    manifest_key = lambda stem: f"RE_{stem}.json"
+    current_keys = {manifest_key(s) for s in reports_by_stem.keys()}
+
+    # 1) Drop manifest entries for reports that no longer exist.
     for stale in list(new_manifest.keys()):
-        if stale not in current_reports:
+        if stale not in current_keys:
             ids = new_manifest[stale].get("ids") or []
             if ids:
                 try:
@@ -827,21 +855,23 @@ def _refresh_index_from_reports(force: bool = False) -> int:
                     print(f"[index] stale-delete failed for {stale}: {e}")
             del new_manifest[stale]
 
-    # 2) Add/update changed reports.
-    for report in REPORTS_DIR.glob("RE_*.json"):
-        mtime = report.stat().st_mtime
-        prev = new_manifest.get(report.name)
-        if prev and prev.get("mtime") == mtime and not force:
-            continue
-        try:
-            data = json.loads(report.read_text(encoding="utf-8"))
-        except Exception:
+    # 2) Add/update changed reports. We don't have a per-row mtime cheap to
+    # query, so we hash the report payload — change = re-embed.
+    import hashlib
+
+    for stem, data in reports_by_stem.items():
+        key = manifest_key(stem)
+        payload_hash = hashlib.md5(
+            json.dumps(data, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+        prev = new_manifest.get(key)
+        if prev and prev.get("hash") == payload_hash and not force:
             continue
         meta = {
-            "file_name": data.get("file_name", report.stem),
+            "file_name": stem,
             "vendor": (data.get("header") or {}).get("vendor_id", ""),
             "invoice_no": (data.get("header") or {}).get("invoice_no", ""),
-            "source_report": report.name,
+            "source_report": key,
         }
         docs: list[Document] = []
         ids: list[str] = []
@@ -850,14 +880,13 @@ def _refresh_index_from_reports(force: bool = False) -> int:
             ids.append(str(uuid.uuid4()))
         if not docs:
             continue
-        # Delete prior vectors for this report (if any) so re-process doesn't dup.
         if prev and prev.get("ids"):
             try:
                 db.delete(ids=prev["ids"])
             except Exception as e:
-                print(f"[index] stale-delete failed for {report.name}: {e}")
+                print(f"[index] stale-delete failed for {key}: {e}")
         db.add_documents(docs, ids=ids)
-        new_manifest[report.name] = {"mtime": mtime, "ids": ids}
+        new_manifest[key] = {"hash": payload_hash, "ids": ids}
         added_total += len(docs)
 
     _save_manifest(new_manifest)
@@ -883,7 +912,7 @@ def rebuild_index():
             pass
     n = _refresh_index_from_reports(force=True)
     if n == 0:
-        raise HTTPException(400, "No reports found in outputs/reports/.")
+        raise HTTPException(400, "No reports found.")
     return {"ok": True, "indexed": n, "backend": "cloud" if _is_cloud_chroma() else "local"}
 
 
@@ -941,9 +970,25 @@ def upload_from_url(body: UploadUrlBody):
     name = body.filename or Path(urllib.parse.urlparse(url).path).name or f"web{ext}"
     if not name.lower().endswith(ext):
         name = Path(name).stem + ext
-    dest = INBOX_DIR / name
-    dest.write_bytes(data)
-    return {"ok": True, "filename": dest.name}
+    # Upload to bucket inbox/. mailbox_utils.poll() will pull it into the
+    # local cache when /process runs.
+    media_by_ext = {
+        ".pdf": "application/pdf", ".png": "image/png",
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }
+    supastorage.upload(
+        supastorage.inbox_path(name),
+        data,
+        content_type=media_by_ext.get(ext, "application/octet-stream"),
+    )
+    # Fresh upload — drop any prior report so /process picks it up cleanly.
+    supadb.delete_report(name)
+    try:
+        mailbox_utils.unmark(name)
+    except Exception:
+        pass
+    return {"ok": True, "filename": name}
 
 
 @app.post("/upload")
@@ -952,23 +997,26 @@ async def upload_invoice(file: UploadFile = File(...)):
     ext = Path(file.filename or "").suffix.lower()
     if ext not in allowed:
         raise HTTPException(400, f"Unsupported file type: {ext}")
-    dest = INBOX_DIR / (file.filename or "upload" + ext)
-    with open(dest, "wb") as out:
-        shutil.copyfileobj(file.file, out)
+    name = file.filename or f"upload{ext}"
+    data = await file.read()
+    media_by_ext = {
+        ".pdf": "application/pdf", ".png": "image/png",
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }
+    supastorage.upload(
+        supastorage.inbox_path(name),
+        data,
+        content_type=media_by_ext.get(ext, "application/octet-stream"),
+    )
     # A fresh upload is an explicit request to re-process. Clear any stale
-    # poller bookkeeping AND any previous report so the next /process picks it up.
+    # poller bookkeeping AND any previous report so /process picks it up.
     try:
-        mailbox_utils.unmark(dest.name)
+        mailbox_utils.unmark(name)
     except Exception:
         pass
-    stem = dest.stem
-    old_report = REPORTS_DIR / f"RE_{stem}.json"
-    if old_report.exists():
-        try:
-            old_report.unlink()
-        except Exception:
-            pass
-    return {"ok": True, "filename": dest.name}
+    supadb.delete_report(name)
+    return {"ok": True, "filename": name}
 
 
 def _load_db() -> Optional[Chroma]:
@@ -1008,16 +1056,11 @@ def _build_full_corpus_context() -> str:
     pass the full set of report summaries so the model can count, sort, sum.
     """
     rows = []
-    for f in sorted(os.listdir(REPORTS_DIR)) if REPORTS_DIR.exists() else []:
-        if not (f.startswith("RE_") and f.endswith(".json")):
-            continue
-        try:
-            data = json.loads((REPORTS_DIR / f).read_text(encoding="utf-8"))
-        except Exception:
-            continue
+    for data in supadb.list_reports():
         h = data.get("header") or {}
+        stem = data.get("file_name", "")
         rows.append({
-            "file": f,
+            "file": f"RE_{stem}.json" if stem else "",
             "invoice_no": h.get("invoice_no", ""),
             "invoice_date": h.get("invoice_date", ""),
             "vendor": h.get("vendor_id", ""),
@@ -1076,15 +1119,7 @@ def chat(body: ChatBody):
 
 
 def _load_all_reports() -> list[dict]:
-    out = []
-    if REPORTS_DIR.exists():
-        for f in sorted(os.listdir(REPORTS_DIR)):
-            if f.startswith("RE_") and f.endswith(".json"):
-                try:
-                    out.append(json.loads((REPORTS_DIR / f).read_text(encoding="utf-8")))
-                except Exception:
-                    continue
-    return out
+    return supadb.list_reports()
 
 
 def _summarize_invoice_for_card(data: dict) -> dict:
@@ -1112,23 +1147,15 @@ def tool_get_invoice(file_name: str) -> dict:
         stem = stem[3:-5]
     if "." in stem:
         stem = stem[: stem.rfind(".")]
-    target = REPORTS_DIR / f"RE_{stem}.json"
-    if not target.exists():
-        # Fuzzy match — invoice_no or partial filename.
-        for r in _load_all_reports():
-            h = r.get("header") or {}
-            if (
-                r.get("file_name", "") == stem
-                or h.get("invoice_no", "") == file_name
-                or stem.lower() in r.get("file_name", "").lower()
-            ):
-                return {"kind": "invoice", "payload": _summarize_invoice_for_card(r)}
-        return {"kind": "error", "payload": {"message": f"No invoice matching '{file_name}'"}}
-    try:
-        data = json.loads(target.read_text(encoding="utf-8"))
-    except Exception:
-        return {"kind": "error", "payload": {"message": "Failed to read report"}}
-    return {"kind": "invoice", "payload": _summarize_invoice_for_card(data)}
+    for r in _load_all_reports():
+        h = r.get("header") or {}
+        if (
+            r.get("file_name", "") == stem
+            or h.get("invoice_no", "") == file_name
+            or stem.lower() in (r.get("file_name", "") or "").lower()
+        ):
+            return {"kind": "invoice", "payload": _summarize_invoice_for_card(r)}
+    return {"kind": "error", "payload": {"message": f"No invoice matching '{file_name}'"}}
 
 
 def tool_get_vendor_stats(vendor: str) -> dict:

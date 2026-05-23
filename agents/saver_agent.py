@@ -1,10 +1,12 @@
+import os
+
 from agents.reporting_agent import (
-    _atomic_write_json,
     STATUS_APPROVED,
     STATUS_REJECTED,
     STATUS_MANUAL,
     STATUS_NOT_REQUIRED,
 )
+from api import db
 
 
 def _normalize_decision_status(raw) -> str:
@@ -27,9 +29,10 @@ def _normalize_decision_status(raw) -> str:
 
 
 def final_saver(state):
-    """Persist the final report JSON. Vector indexing is centralized in
-    api.server._refresh_index_from_reports (single writer into Chroma) — do
-    NOT add vectors here, that would produce duplicates on every re-process.
+    """Persist the final report to Supabase Postgres. Vector indexing is
+    centralized in api.server._refresh_index_from_reports (single writer into
+    Chroma) — do NOT add vectors here, that would produce duplicates on every
+    re-process.
     """
     print("[INFO] Saving final report")
     state["status"] = _normalize_decision_status(state.get("status"))
@@ -43,5 +46,9 @@ def final_saver(state):
     result["status"] = state["status"]
     result["remarks"] = state["remarks"]
     result["pipeline_status"] = "ok"
-    _atomic_write_json(f"outputs/reports/RE_{state['file_name']}.json", result)
+
+    # PK = source filename with extension (matches inbox/ and bucket layout).
+    file_path = state.get("file_path") or ""
+    source_name = os.path.basename(file_path) if file_path else f"{state['file_name']}.pdf"
+    db.upsert_report(source_name, result)
     return state

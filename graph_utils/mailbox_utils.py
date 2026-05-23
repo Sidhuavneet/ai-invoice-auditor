@@ -1,77 +1,67 @@
-from apscheduler.schedulers.background import BackgroundScheduler
-import time,shutil,os
-import json
+"""Bucket-backed mailbox.
 
-added_files_path="outputs/added.json"
+The Supabase Storage bucket holds the canonical inbox/ and processed/
+folders. `poll(target)` returns the next un-processed file by downloading it
+to the local `target` directory so the existing PDF/DOCX/image readers work
+unchanged. The processed-files tracker lives in Postgres.
+"""
 
-def load_or_create_json(path, default_data=None):
-    print("loader_called")
-    if default_data is None:
-        default_data = []
+from __future__ import annotations
 
-    if os.path.exists(path):
-        with open(path, "r") as f:
-            try:
-                return json.load(f)
-            except json.JSONDecodeError:
-                # File exists but is empty or corrupted
-                return default_data
-    else:
-        with open(path, "w") as f:
-            json.dump(default_data, f, indent=4)
-        return default_data
-        
+import os
+
+from api import db, storage
 
 
-
-def sender(source,target,delay):
-    print("Sender Started")
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(send, 'interval', seconds=delay,args=[source,target])
-    scheduler.start()
+SOURCE_EXTS = (".pdf", ".docx", ".png", ".jpg", ".jpeg")
 
 
-
-def send(source,target):
-    print("-------------sending--------------")
-    for f in os.listdir(source):
-        if f.lower().endswith(('.pdf',".docx",".png",".jpg",".jpeg")) and f not in os.listdir(target):
-            shutil.copy(os.path.join(source,f),target)
-            f_name=f[:f.rfind(".")]
-            meta=f_name+".meta.json"
-            if meta in os.listdir(source):
-                shutil.copy(os.path.join(source,meta),target)
-                print(f"simualted arrival of {meta}")
-            print(f"simualted arrival of {f}")
-            break
+def _is_source_file(name: str) -> bool:
+    return name.lower().endswith(SOURCE_EXTS)
 
 
-def poll(target):
+def _ensure_local(target: str, bucket_path: str, name: str) -> str:
+    """Download `bucket_path` into `target/name` if not already cached locally."""
+    os.makedirs(target, exist_ok=True)
+    local = os.path.join(target, name)
+    if not os.path.exists(local):
+        data = storage.download(bucket_path)
+        with open(local, "wb") as f:
+            f.write(data)
+    return local
+
+
+def poll(target: str) -> dict | None:
+    """Return the next un-processed file from the bucket inbox/.
+
+    Downloads the file (and any .meta.json sidecar) into `target/` so
+    downstream code can read it via the regular filesystem path. Marks the
+    file processed in Postgres so subsequent calls advance to the next one.
+    """
     print("----------------polling-----------------")
-    added=load_or_create_json(added_files_path)
-    out={"file":"","meta":""}
-    for fname in os.listdir(target):
-        if fname.lower().endswith(('.pdf',".docx",".png",".jpg",".jpeg")):
-            if fname not in added:
-                print("open file",fname)
-                f_name=fname[:fname.rfind(".")]
-                out["file"]=fname
-                meta=f_name+".meta.json"
-                if meta in os.listdir(target):
-                    print("open meta",meta)
-                    out["meta"]=meta
-                added.append(fname)
-                with open(added_files_path, "w") as fh:
-                    json.dump(added, fh, indent=4)
-                print(f"simulated ingestion of {fname}")
-                return out
+    processed = db.processed_set()
+    listing = storage.list_dir("inbox")
+    out = {"file": "", "meta": ""}
+    for name in listing:
+        if not _is_source_file(name):
+            continue
+        if name in processed:
+            continue
+        _ensure_local(target, storage.inbox_path(name), name)
+        out["file"] = name
+
+        stem = name[: name.rfind(".")]
+        meta_name = f"{stem}.meta.json"
+        if meta_name in listing:
+            _ensure_local(target, storage.inbox_path(meta_name), meta_name)
+            out["meta"] = meta_name
+
+        db.mark_processed(name)
+        print(f"polled {name}")
+        return out
+    return None
 
 
-def unmark(filename):
-    """Remove a file from the processed list so it can be retried."""
-    added=load_or_create_json(added_files_path)
-    if filename in added:
-        added.remove(filename)
-        with open(added_files_path, "w") as fh:
-            json.dump(added, fh, indent=4)
-
+def unmark(filename: str) -> None:
+    """Remove a file from the processed set so it can be retried."""
+    db.unmark_processed(filename)

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Icon } from "@/lib/ui";
+import { getStats, type StatsResponse } from "@/lib/api";
 
 /* ─── Data ────────────────────────────────────────────────────────────────
  *
@@ -254,6 +255,7 @@ export default function TechPage() {
   return (
     <div className="space-y-10 pb-12">
       <Header />
+      <LiveImpactBand />
       <PipelineHero />
       <StackOverview />
       <TechBento />
@@ -264,6 +266,17 @@ export default function TechPage() {
 }
 
 function Header() {
+  const badges = [
+    "Multi-agent",
+    "LangGraph",
+    "Groq Llama 3.3",
+    "RAG",
+    "HITL",
+    "MCP",
+    "Function-calling",
+    "Streaming SSE",
+    "Postgres",
+  ];
   return (
     <motion.header
       initial={{ opacity: 0, y: 8 }}
@@ -271,16 +284,127 @@ function Header() {
       transition={{ duration: 0.4 }}
     >
       <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-violet-300">
-        <Icon name="sparkles" className="h-3.5 w-3.5" /> Under the hood
+        <Icon name="sparkles" className="h-3.5 w-3.5" />
+        Multi-agent · LangGraph · MCP-ready · Production architecture
       </div>
       <h1 className="mt-1 bg-gradient-to-r from-white to-zinc-400 bg-clip-text text-3xl font-semibold tracking-tight text-transparent">
-        Tech Stack
+        Agentic invoice auditor. Auto-approves the clean ones, escalates only edge cases.
       </h1>
       <p className="mt-1 max-w-2xl text-sm text-zinc-500">
-        Every tool the auditor runs on, what it does, and exactly where it lives in the codebase.
-        Hover the pipeline below to see which agents lean on which technologies.
+        Six specialised agents orchestrated in LangGraph extract, translate, validate, audit, and
+        save each invoice — with human-in-the-loop on flagged ones and a RAG chat over the corpus.
+        Numbers below are pulled live from the running system, not hardcoded.
       </p>
+      <div className="mt-3 flex flex-wrap gap-1.5">
+        {badges.map((b, i) => (
+          <motion.span
+            key={b}
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.25, delay: 0.1 + i * 0.03 }}
+            className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2 py-0.5 text-[11px] font-medium text-zinc-300"
+          >
+            {b}
+          </motion.span>
+        ))}
+      </div>
     </motion.header>
+  );
+}
+
+/* ─── LIVE IMPACT BAND — outcome metrics fetched from /stats ──────────── */
+
+function LiveImpactBand() {
+  const [stats, setStats] = useState<StatsResponse | null>(null);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    getStats()
+      .then((s) => !cancelled && setStats(s))
+      .catch(() => !cancelled && setError(true));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const k = stats?.kpis;
+  const totalSpend = k
+    ? Object.entries(k.spend_by_currency || {}).reduce<{ amount: number; currency: string }>(
+        (acc, [cur, amt]) => (amt > acc.amount ? { amount: amt, currency: cur } : acc),
+        { amount: 0, currency: "" },
+      )
+    : { amount: 0, currency: "" };
+
+  const cards = [
+    {
+      label: "Auto-approved",
+      value: k ? `${k.auto_approval_rate.toFixed(0)}%` : "—",
+      sub: "Cleared without human touch",
+      accent: "#34d399",
+    },
+    {
+      label: "Invoices audited",
+      value: k ? k.total_invoices.toLocaleString() : "—",
+      sub: k ? `${k.total_line_items.toLocaleString()} line items parsed` : "Loading from /stats",
+      accent: "#a78bfa",
+    },
+    {
+      label: "Spend analyzed",
+      value: totalSpend.amount
+        ? `${totalSpend.currency} ${totalSpend.amount.toLocaleString(undefined, {
+            maximumFractionDigits: 0,
+          })}`
+        : "—",
+      sub: "Across all processed invoices",
+      accent: "#22d3ee",
+    },
+    {
+      label: "Flagged for review",
+      value: k ? `${k.manual_review + k.rejected}` : "—",
+      sub: k ? `${k.manual_review} manual · ${k.rejected} rejected` : "Only the edge cases",
+      accent: "#fbbf24",
+    },
+  ];
+
+  return (
+    <section>
+      <div className="mb-2 flex items-center gap-2 text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+        <span className="relative flex h-1.5 w-1.5">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-400" />
+        </span>
+        {error ? "Live metrics offline" : "Live impact · from the running system"}
+      </div>
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+        {cards.map((c, i) => (
+          <motion.div
+            key={c.label}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.35, delay: i * 0.04 }}
+            className="card relative overflow-hidden p-4"
+            style={{ borderColor: `${c.accent}30` }}
+          >
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-x-0 top-0 h-px"
+              style={{ background: `linear-gradient(90deg, transparent, ${c.accent}, transparent)` }}
+            />
+            <div
+              className="text-[10px] font-semibold uppercase tracking-wider"
+              style={{ color: c.accent }}
+            >
+              {c.label}
+            </div>
+            <div className="mt-1 bg-gradient-to-r from-white to-zinc-300 bg-clip-text text-3xl font-semibold tabular-nums text-transparent">
+              {c.value}
+            </div>
+            <div className="mt-0.5 text-[11px] text-zinc-500">{c.sub}</div>
+          </motion.div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -692,12 +816,12 @@ function FlowArrow() {
 
 function StatsFooter() {
   const stats = [
-    { k: "6", v: "Agents in the pipeline" },
-    { k: TECH.length.toString(), v: "Technologies wired" },
-    { k: "12", v: "MCP tools exposed" },
-    { k: "10", v: "In-chat function-callable tools" },
-    { k: "1", v: "Cloud vector database" },
-    { k: "100%", v: "Streaming responses" },
+    { k: "3", v: "Document formats — PDF, DOCX, scans" },
+    { k: "3", v: "Languages — English, German, Spanish" },
+    { k: "1-click", v: "Human review on flagged invoices" },
+    { k: "0 loss", v: "Redeploys mid-pipeline — Postgres checkpoints" },
+    { k: "RAG", v: "Natural-language Q&A across every invoice" },
+    { k: "MCP", v: "Same tools usable from Claude Desktop, Cursor" },
   ];
   return (
     <section className="grid grid-cols-2 gap-2 md:grid-cols-6">
