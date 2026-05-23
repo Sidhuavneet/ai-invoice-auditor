@@ -267,15 +267,21 @@ export default function TechPage() {
 
 function Header() {
   const badges = [
+    "Python",
     "Multi-agent",
     "LangGraph",
-    "Groq Llama 3.3",
+    "LangChain",
+    "LangSmith",
+    "Groq Llama 3.3 LLM",
     "RAG",
     "HITL",
     "MCP",
     "Function-calling",
+    "ChromaDB",
+    "FastAPI",
     "Streaming SSE",
     "Postgres",
+    "Pydantic",
   ];
   return (
     <motion.header
@@ -285,15 +291,13 @@ function Header() {
     >
       <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-violet-300">
         <Icon name="sparkles" className="h-3.5 w-3.5" />
-        Multi-agent · LangGraph · MCP-ready · Production architecture
+        Multi-agent · LangGraph · LangChain · LangSmith · MCP · Python
       </div>
       <h1 className="mt-1 bg-gradient-to-r from-white to-zinc-400 bg-clip-text text-3xl font-semibold tracking-tight text-transparent">
         Agentic invoice auditor. Auto-approves the clean ones, escalates only edge cases.
       </h1>
       <p className="mt-1 max-w-2xl text-sm text-zinc-500">
-        Six specialised agents orchestrated in LangGraph extract, translate, validate, audit, and
-        save each invoice — with human-in-the-loop on flagged ones and a RAG chat over the corpus.
-        Numbers below are pulled live from the running system, not hardcoded.
+        Six specialised agents orchestrated in <span className="text-zinc-300">LangGraph</span> + <span className="text-zinc-300">LangChain</span> extract, translate, validate, audit, and save each invoice through a <span className="text-zinc-300">Groq Llama 3.3 LLM</span> — with human-in-the-loop on flagged ones, a <span className="text-zinc-300">RAG</span> chat over the corpus, and end-to-end <span className="text-zinc-300">LangSmith</span> tracing. Numbers below are pulled live from the running system, not hardcoded.
       </p>
       <div className="mt-3 flex flex-wrap gap-1.5">
         {badges.map((b, i) => (
