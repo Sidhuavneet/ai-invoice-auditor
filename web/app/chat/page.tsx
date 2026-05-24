@@ -127,7 +127,7 @@ export default function ChatPage() {
     <div className="flex h-[calc(100vh-3rem)] flex-col gap-4">
       <header>
         <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-violet-300">
-          <Icon name="sparkles" className="h-3.5 w-3.5" /> RAG Chatbot
+          <Icon name="sparkles" className="h-3.5 w-3.5" /> Agentic chat · Tool-calling · Streaming
         </div>
         <h1 className="mt-1 bg-gradient-to-r from-white to-zinc-400 bg-clip-text text-3xl font-semibold tracking-tight text-transparent">
           QA Chat

@@ -211,7 +211,7 @@ export default function DashboardPage() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button onClick={refresh} className="btn-ghost" title="Refresh">
+          <button onClick={refresh} className="btn-ghost" title="Refresh invoices & stats" aria-label="Refresh invoices and stats">
             <Icon name="refresh" />
           </button>
           <label className="btn-ghost cursor-pointer">
