@@ -14,6 +14,66 @@ const items = [
 export function SideNav() {
   const pathname = usePathname();
   return (
+    <>
+      <MobileTopNav pathname={pathname} />
+      <DesktopSideNav pathname={pathname} />
+    </>
+  );
+}
+
+function MobileTopNav({ pathname }: { pathname: string }) {
+  return (
+    <header
+      className="sticky top-0 z-40 -mx-4 mb-4 flex items-center justify-between gap-3 border-b border-[color:var(--border)] bg-[color:var(--bg-card)]/85 px-4 py-3 backdrop-blur-xl md:hidden"
+      style={{ boxShadow: "0 8px 24px -16px rgba(0,0,0,0.6)" }}
+    >
+      <Link href="/" className="flex items-center gap-2">
+        <span
+          className="flex h-8 w-8 items-center justify-center rounded-lg text-white"
+          style={{
+            background: "linear-gradient(135deg, rgb(167,139,250) 0%, rgb(34,211,238) 100%)",
+            boxShadow: "0 0 16px -4px rgb(167 139 250 / 0.6)",
+          }}
+        >
+          <Icon name="sparkles" className="h-4 w-4" />
+        </span>
+        <span className="text-sm font-semibold tracking-tight">Invoice Auditor</span>
+      </Link>
+      <nav className="flex items-center gap-1">
+        {items.map((it) => {
+          const active =
+            it.href === "/" ? pathname === "/" || pathname.startsWith("/invoices") : pathname.startsWith(it.href);
+          return (
+            <Link
+              key={it.href}
+              href={it.href}
+              aria-label={it.label}
+              className={`flex h-9 w-9 items-center justify-center rounded-lg transition-all ${
+                active
+                  ? "bg-white/[0.08] text-white"
+                  : "text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-100"
+              }`}
+              style={
+                active
+                  ? {
+                      background:
+                        "linear-gradient(135deg, rgb(167,139,250,0.18) 0%, rgb(34,211,238,0.10) 100%)",
+                      boxShadow: "0 0 16px -8px rgb(167 139 250 / 0.5)",
+                    }
+                  : undefined
+              }
+            >
+              <Icon name={it.icon} className="h-4 w-4" />
+            </Link>
+          );
+        })}
+      </nav>
+    </header>
+  );
+}
+
+function DesktopSideNav({ pathname }: { pathname: string }) {
+  return (
     <motion.aside
       initial={{ opacity: 0, x: -10 }}
       animate={{ opacity: 1, x: 0 }}
