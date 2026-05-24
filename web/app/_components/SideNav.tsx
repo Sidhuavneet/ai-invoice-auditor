@@ -6,10 +6,18 @@ import { motion } from "framer-motion";
 import { Icon } from "@/lib/ui";
 
 const items = [
-  { href: "/", label: "Dashboard", icon: "home" as const },
-  { href: "/chat", label: "QA Chat", icon: "chat" as const },
-  { href: "/tech", label: "Tech Stack", icon: "sparkles" as const },
+  { href: "/", label: "Dashboard", icon: "home" as const, featured: false },
+  { href: "/chat", label: "QA Chat", icon: "chat" as const, featured: false },
+  { href: "/tech", label: "Tech Page", icon: "sparkles" as const, featured: true },
 ];
+
+// Compact label shown beneath the icon in the mobile top bar.
+function shortLabel(label: string): string {
+  if (label === "Dashboard") return "Home";
+  if (label === "QA Chat") return "Chat";
+  if (label === "Tech Page") return "Tech";
+  return label;
+}
 
 export function SideNav() {
   const pathname = usePathname();
@@ -48,10 +56,13 @@ function MobileTopNav({ pathname }: { pathname: string }) {
               key={it.href}
               href={it.href}
               aria-label={it.label}
-              className={`flex h-9 w-9 items-center justify-center rounded-lg transition-all ${
+              title={it.label}
+              className={`relative flex min-w-[3.25rem] flex-col items-center justify-center gap-0.5 rounded-lg px-2 py-1.5 transition-all ${
                 active
-                  ? "bg-white/[0.08] text-white"
-                  : "text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-100"
+                  ? "text-white"
+                  : it.featured
+                    ? "text-violet-100"
+                    : "text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-100"
               }`}
               style={
                 active
@@ -60,10 +71,23 @@ function MobileTopNav({ pathname }: { pathname: string }) {
                         "linear-gradient(135deg, rgb(167,139,250,0.18) 0%, rgb(34,211,238,0.10) 100%)",
                       boxShadow: "0 0 16px -8px rgb(167 139 250 / 0.5)",
                     }
-                  : undefined
+                  : it.featured
+                    ? {
+                        background:
+                          "linear-gradient(135deg, rgba(167,139,250,0.12) 0%, rgba(34,211,238,0.06) 100%)",
+                        border: "1px solid rgba(167,139,250,0.20)",
+                      }
+                    : undefined
               }
             >
               <Icon name={it.icon} className="h-4 w-4" />
+              <span className="text-[10px] font-medium leading-none">{shortLabel(it.label)}</span>
+              {it.featured && !active && (
+                <span className="absolute -right-0.5 -top-0.5 flex h-2 w-2">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-violet-400 opacity-75" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-violet-400" />
+                </span>
+              )}
             </Link>
           );
         })}
@@ -108,8 +132,19 @@ function DesktopSideNav({ pathname }: { pathname: string }) {
               className={`group relative flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-all ${
                 active
                   ? "bg-white/[0.06] text-white"
-                  : "text-zinc-400 hover:bg-white/[0.03] hover:text-zinc-100"
+                  : it.featured
+                    ? "text-violet-100 hover:text-white"
+                    : "text-zinc-400 hover:bg-white/[0.03] hover:text-zinc-100"
               }`}
+              style={
+                it.featured && !active
+                  ? {
+                      background:
+                        "linear-gradient(135deg, rgba(167,139,250,0.10) 0%, rgba(34,211,238,0.06) 100%)",
+                      border: "1px solid rgba(167,139,250,0.20)",
+                    }
+                  : undefined
+              }
             >
               {active && (
                 <motion.span
@@ -123,26 +158,17 @@ function DesktopSideNav({ pathname }: { pathname: string }) {
                 />
               )}
               <Icon name={it.icon} className="h-4 w-4" />
-              {it.label}
+              <span className="flex-1">{it.label}</span>
+              {it.featured && !active && (
+                <span className="relative flex h-1.5 w-1.5">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-violet-400 opacity-75" />
+                  <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-violet-400" />
+                </span>
+              )}
             </Link>
           );
         })}
       </nav>
-
-      <div
-        className="mt-auto rounded-lg border border-[color:var(--border)] p-3"
-        style={{
-          background:
-            "linear-gradient(135deg, rgba(167,139,250,0.08) 0%, rgba(34,211,238,0.04) 100%)",
-        }}
-      >
-        <div className="flex items-center gap-1.5 text-xs font-medium text-violet-200">
-          <Icon name="sparkles" className="h-3.5 w-3.5" /> Powered by
-        </div>
-        <p className="mt-1 text-[11px] leading-relaxed text-zinc-400">
-          LangGraph · Groq Llama 3.3 · ChromaDB · LangSmith
-        </p>
-      </div>
     </motion.aside>
   );
 }
