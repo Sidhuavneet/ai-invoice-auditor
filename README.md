@@ -1,3 +1,13 @@
+---
+title: AI Invoice Auditor
+emoji: 📄
+colorFrom: purple
+colorTo: blue
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # AI Invoice Auditor
 
 An end-to-end **multi-agent AI system** that ingests invoices (PDF, DOCX, scanned images), extracts structured data, validates it against configurable business rules, flags discrepancies for human review, and answers natural-language questions about processed invoices via a RAG chatbot.
